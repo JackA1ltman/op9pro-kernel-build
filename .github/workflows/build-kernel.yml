@@ -23,6 +23,34 @@ jobs:
 
     steps:
       # ─────────────────────────────────────────────
+      # 0. FREE DISK SPACE
+      #    GitHub runners have ~14GB free. We need space
+      #    for: Clang (~3.5GB), GCC (2x ~200MB), kernel
+      #    source (~2GB), device tree (~1.5GB), and build
+      #    output (~5-8GB). Remove preinstalled bloat.
+      # ─────────────────────────────────────────────
+      - name: Free disk space
+        run: |
+          echo "==> Disk space BEFORE cleanup:"
+          df -h /
+          echo ""
+
+          # Remove large preinstalled packages
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/.ghcup
+
+          # Remove Docker images
+          sudo docker image prune --all --force 2>/dev/null || true
+
+          echo "==> Disk space AFTER cleanup:"
+          df -h /
+
+      # ─────────────────────────────────────────────
       # 1. CHECKOUT SOURCES
       # ─────────────────────────────────────────────
       - name: Checkout build scripts
@@ -52,11 +80,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache curl flex \
-            git gnupg gperf imagemagick lib32ncurses5-dev \
+            git gnupg gperf lib32ncurses5-dev \
             lib32readline-dev lib32z1-dev libelf-dev \
-            liblz4-tool libncurses5-dev libsdl1.2-dev \
+            liblz4-tool libncurses5-dev \
             libssl-dev libxml2 libxml2-utils lzop \
-            pngcrush rsync schedtool squashfs-tools \
+            rsync schedtool squashfs-tools \
             xsltproc zip zlib1g-dev python3 python-is-python3 \
             cpio
 
@@ -89,6 +117,10 @@ jobs:
 
           echo "==> Sparse-checkout complete."
 
+          # Remove .git to save disk space (~1-2GB of pack files)
+          rm -rf .git
+          echo "==> Cleaned up .git directory to save space."
+
       - name: Verify Clang toolchain
         run: |
           CLANG_BIN="$GITHUB_WORKSPACE/toolchain/clang/clang-r383902b1/bin/clang"
@@ -113,6 +145,8 @@ jobs:
           git clone --depth=1 -b lineage-19.1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
             $GITHUB_WORKSPACE/toolchain/gcc-aarch64
+          # Remove .git to save disk space
+          rm -rf $GITHUB_WORKSPACE/toolchain/gcc-aarch64/.git
 
       - name: Clone GCC arm32 cross-compiler (for compat vDSO)
         run: |
@@ -120,117 +154,58 @@ jobs:
           git clone --depth=1 -b lineage-19.1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
             $GITHUB_WORKSPACE/toolchain/gcc-arm32
+          # Remove .git to save disk space
+          rm -rf $GITHUB_WORKSPACE/toolchain/gcc-arm32/.git
+
+      - name: Check disk space after toolchains
+        run: |
+          echo "==> Disk space after toolchain setup:"
+          df -h /
+          echo ""
+          echo "==> Workspace breakdown:"
+          du -sh $GITHUB_WORKSPACE/toolchain/clang/ 2>/dev/null || true
+          du -sh $GITHUB_WORKSPACE/toolchain/gcc-aarch64/ 2>/dev/null || true
+          du -sh $GITHUB_WORKSPACE/toolchain/gcc-arm32/ 2>/dev/null || true
+          du -sh $GITHUB_WORKSPACE/kernel_source/ 2>/dev/null || true
+          du -sh $GITHUB_WORKSPACE/kernel_modules_devicetree/ 2>/dev/null || true
 
       # ─────────────────────────────────────────────
       # 4. RESOLVE OPLUS VENDOR SYMLINKS
       #    The kernel source has symlinks to vendor paths
       #    using relative ../../../vendor/oplus/... references.
-      #
-      #    Strategy: Create the vendor directory structure at
-      #    the correct filesystem location so symlinks resolve
-      #    naturally. Symlinks go N levels of ../ from within the
-      #    kernel tree, so we place vendor/* at the right spot.
-      #
-      #    Then fix any remaining broken symlinks by reading
-      #    their targets and looking up in the device tree.
+      #    We create vendor directory symlinks so they resolve.
       # ─────────────────────────────────────────────
       - name: Resolve OPlus vendor symlinks
         run: |
           KERNEL_SRC="$GITHUB_WORKSPACE/kernel_source"
           DT_SRC="$GITHUB_WORKSPACE/kernel_modules_devicetree"
 
-          echo "==> Phase 1: Create vendor directory at all levels symlinks may reference..."
+          echo "==> Creating vendor directory links at all levels..."
 
-          # Symlinks use relative ../ paths. Different depths in the tree
-          # resolve to different filesystem locations. We create symlinks from
-          # vendor/oplus at each possible parent level that symlinks might
-          # reference, pointing to the actual content in the DT repo.
-
-          # The kernel source is at $GITHUB_WORKSPACE/kernel_source/
-          # Symlinks from kernel_source/kernel/<name> with ../../../vendor/...
-          #   resolve to: $GITHUB_WORKSPACE/vendor/...
-          # Symlinks from kernel_source/fs/<name> with ../../../vendor/...
-          #   resolve to: $GITHUB_WORKSPACE/vendor/...
-          # Symlinks from kernel_source/drivers/power/<name> with ../../../../vendor/...
-          #   resolve to: $GITHUB_WORKSPACE/vendor/...
-          # Most paths resolve to $GITHUB_WORKSPACE/vendor or parents.
-
-          # Create "vendor" symlink at $GITHUB_WORKSPACE level
+          # Create "vendor" symlink at multiple parent directories
+          # so ALL relative ../ symlinks resolve regardless of depth
           if [ -d "$DT_SRC/vendor" ]; then
-            echo "  Creating vendor link at GITHUB_WORKSPACE level..."
             ln -sfn "$DT_SRC/vendor" "$GITHUB_WORKSPACE/vendor"
-          fi
+            ln -sfn "$DT_SRC/vendor" "$KERNEL_SRC/vendor" 2>/dev/null || true
 
-          # Some symlinks from deeper dirs (4+ levels) resolve above $GITHUB_WORKSPACE
-          # We also create links at parent levels
-          WORKSPACE_PARENT=$(dirname "$GITHUB_WORKSPACE")
-          WORKSPACE_GRANDPARENT=$(dirname "$WORKSPACE_PARENT")
-
-          if [ -d "$DT_SRC/vendor" ]; then
-            echo "  Creating vendor link at GITHUB_WORKSPACE parent..."
+            WORKSPACE_PARENT=$(dirname "$GITHUB_WORKSPACE")
+            WORKSPACE_GRANDPARENT=$(dirname "$WORKSPACE_PARENT")
             ln -sfn "$DT_SRC/vendor" "$WORKSPACE_PARENT/vendor" 2>/dev/null || true
-            echo "  Creating vendor link at GITHUB_WORKSPACE grandparent..."
             ln -sfn "$DT_SRC/vendor" "$WORKSPACE_GRANDPARENT/vendor" 2>/dev/null || true
           fi
 
-          # Also handle kernel_source-level symlinks (1-2 levels of ../)
-          if [ -d "$DT_SRC/vendor" ]; then
-            echo "  Creating vendor link inside kernel_source..."
-            ln -sfn "$DT_SRC/vendor" "$KERNEL_SRC/vendor" 2>/dev/null || true
-            # One level up from kernel_source
-            ln -sfn "$DT_SRC/vendor" "$(dirname "$KERNEL_SRC")/vendor" 2>/dev/null || true
-          fi
-
-          echo "==> Phase 2: Verify and fix any remaining broken symlinks..."
+          echo "==> Checking for remaining broken symlinks..."
           broken_links=$(find "$KERNEL_SRC" -type l ! -exec test -e {} \; -print 2>/dev/null || true)
 
           if [ -z "$broken_links" ]; then
-            echo "  All symlinks resolved!"
+            echo "  SUCCESS: All symlinks resolved!"
           else
-            echo "  Remaining broken symlinks:"
-            resolved=0
-            removed=0
-
+            echo "  Remaining broken symlinks (removing):"
             for link in $broken_links; do
               target=$(readlink "$link")
-              # Try to resolve the symlink relative to its location
-              link_dir=$(dirname "$link")
-              resolved_path=$(cd "$link_dir" 2>/dev/null && realpath -m "$target" 2>/dev/null || echo "")
-
-              echo "    Broken: $link -> $target"
-              if [ -n "$resolved_path" ]; then
-                echo "      Would resolve to: $resolved_path"
-              fi
-
-              # Strip all leading ../ and try to find in device tree
-              vendor_rel=$(echo "$target" | sed 's|\(\.\./\)*||')
-              if [ -d "$DT_SRC/$vendor_rel" ]; then
-                echo "      ==> Found in DT, copying..."
-                rm -f "$link"
-                cp -r "$DT_SRC/$vendor_rel" "$link"
-                resolved=$((resolved + 1))
-              elif [ -f "$DT_SRC/$vendor_rel" ]; then
-                echo "      ==> Found file in DT, copying..."
-                rm -f "$link"
-                cp "$DT_SRC/$vendor_rel" "$link"
-                resolved=$((resolved + 1))
-              else
-                echo "      WARNING: Not resolvable, removing."
-                rm -f "$link"
-                removed=$((removed + 1))
-              fi
+              echo "    $link -> $target"
+              rm -f "$link"
             done
-
-            echo "  Phase 2 complete: $resolved resolved, $removed removed."
-          fi
-
-          echo "==> Final verification: checking for any remaining broken symlinks..."
-          final_broken=$(find "$KERNEL_SRC" -type l ! -exec test -e {} \; -print 2>/dev/null || true)
-          if [ -n "$final_broken" ]; then
-            echo "  WARNING: Still broken symlinks remaining:"
-            echo "$final_broken"
-          else
-            echo "  SUCCESS: No broken symlinks remain."
           fi
 
       # ─────────────────────────────────────────────
@@ -310,6 +285,8 @@ jobs:
 
           echo "============================================"
           echo "  Step 3: Build kernel (${{ env.KERNEL_IMAGE }})"
+          echo "  Disk space before build:"
+          df -h /
           echo "============================================"
           make "${MAKE_ARGS[@]}" -j$(nproc --all) ${{ env.KERNEL_IMAGE }}
 
@@ -317,6 +294,7 @@ jobs:
           echo "  Build complete!"
           echo "============================================"
           ls -la out/arch/arm64/boot/${{ env.KERNEL_IMAGE }}
+          df -h /
 
       # ─────────────────────────────────────────────
       # 7. ANYKERNEL3 PACKAGING
