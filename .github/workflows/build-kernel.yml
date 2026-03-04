@@ -24,9 +24,6 @@ jobs:
     steps:
       # ─────────────────────────────────────────────
       # 0. FREE DISK SPACE
-      #    GitHub runners have ~14GB free. Kernel build
-      #    with LTO needs ~10-15GB for output alone.
-      #    Aggressively remove preinstalled packages.
       # ─────────────────────────────────────────────
       - name: Maximize disk space
         uses: jlumbroso/free-disk-space@main
@@ -66,13 +63,11 @@ jobs:
           path: kernel_modules_devicetree
           fetch-depth: 1
 
-      # Remove .git from large repos to save disk space
       - name: Clean up git metadata
         run: |
           rm -rf $GITHUB_WORKSPACE/kernel_source/.git
           rm -rf $GITHUB_WORKSPACE/kernel_modules_devicetree/.git
           echo "==> Removed .git dirs from source repos"
-          df -h /
 
       # ─────────────────────────────────────────────
       # 2. INSTALL HOST DEPENDENCIES
@@ -92,11 +87,6 @@ jobs:
 
       # ─────────────────────────────────────────────
       # 3. TOOLCHAIN — AOSP Clang 11 (r383902b1)
-      #    Matches stock: "clang version 11.0.2"
-      #
-      #    Using GitHub mirror (clang-only repo) instead
-      #    of the massive AOSP sparse-checkout which
-      #    downloads >3GB of pack data.
       # ─────────────────────────────────────────────
       - name: Clone AOSP Clang 11 (r383902b1) from GitHub mirror
         run: |
@@ -105,47 +95,27 @@ jobs:
             https://github.com/anrui2032/android_prebuilts_clang_host_linux-x86_clang-r383902b1.git \
             $GITHUB_WORKSPACE/toolchain/clang-r383902b1
           rm -rf $GITHUB_WORKSPACE/toolchain/clang-r383902b1/.git
-          echo "==> Clone complete, .git removed."
 
       - name: Verify Clang toolchain
         run: |
           CLANG_BIN="$GITHUB_WORKSPACE/toolchain/clang-r383902b1/bin/clang"
-          echo "==> Verifying clang binary..."
-
           if [ ! -f "$CLANG_BIN" ]; then
-            echo "ERROR: clang binary not found at expected path!"
-            ls -la $GITHUB_WORKSPACE/toolchain/clang-r383902b1/ || true
-            find $GITHUB_WORKSPACE/toolchain/clang-r383902b1 -maxdepth 3 -name "clang" -type f 2>/dev/null | head -5
+            echo "ERROR: clang binary not found!"
             exit 1
           fi
-
           "$CLANG_BIN" --version
-          echo "==> Clang toolchain verified!"
 
-      - name: Clone GCC aarch64 cross-compiler
+      - name: Clone GCC cross-compilers
         run: |
           git clone --depth=1 -b lineage-19.1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
             $GITHUB_WORKSPACE/toolchain/gcc-aarch64
           rm -rf $GITHUB_WORKSPACE/toolchain/gcc-aarch64/.git
 
-      - name: Clone GCC arm32 cross-compiler
-        run: |
           git clone --depth=1 -b lineage-19.1 \
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
             $GITHUB_WORKSPACE/toolchain/gcc-arm32
           rm -rf $GITHUB_WORKSPACE/toolchain/gcc-arm32/.git
-
-      - name: Show disk space after toolchains
-        run: |
-          echo "==> Disk space after toolchain setup:"
-          df -h /
-          echo ""
-          du -sh $GITHUB_WORKSPACE/toolchain/clang-r383902b1/ || true
-          du -sh $GITHUB_WORKSPACE/toolchain/gcc-aarch64/ || true
-          du -sh $GITHUB_WORKSPACE/toolchain/gcc-arm32/ || true
-          du -sh $GITHUB_WORKSPACE/kernel_source/ || true
-          du -sh $GITHUB_WORKSPACE/kernel_modules_devicetree/ || true
 
       # ─────────────────────────────────────────────
       # 4. RESOLVE OPLUS VENDOR SYMLINKS
@@ -154,8 +124,6 @@ jobs:
         run: |
           KERNEL_SRC="$GITHUB_WORKSPACE/kernel_source"
           DT_SRC="$GITHUB_WORKSPACE/kernel_modules_devicetree"
-
-          echo "==> Creating vendor directory links..."
 
           if [ -d "$DT_SRC/vendor" ]; then
             ln -sfn "$DT_SRC/vendor" "$GITHUB_WORKSPACE/vendor"
@@ -167,9 +135,6 @@ jobs:
             ln -sfn "$DT_SRC/vendor" "$WORKSPACE_GRANDPARENT/vendor" 2>/dev/null || true
           fi
 
-          echo "==> Creating kernel/msm-5.4 symlinks for vendor relative includes..."
-          # OnePlus vendor files often have `#include <../../../../kernel/msm-5.4/mm/internal.h>`
-          # We must make sure kernel/msm-5.4 points to our actual kernel_source
           mkdir -p "$GITHUB_WORKSPACE/kernel"
           ln -sfn "$KERNEL_SRC" "$GITHUB_WORKSPACE/kernel/msm-5.4"
 
@@ -181,16 +146,9 @@ jobs:
             ln -sfn "$KERNEL_SRC" "$WORKSPACE_PARENT/kernel/msm-5.4" 2>/dev/null || true
           fi
 
-          # Verify symlinks resolved
           broken=$(find "$KERNEL_SRC" -type l ! -exec test -e {} \; -print 2>/dev/null || true)
-          if [ -z "$broken" ]; then
-            echo "  SUCCESS: All symlinks resolved!"
-          else
-            echo "  Remaining broken symlinks (removing):"
-            echo "$broken" | while read link; do
-              echo "    $(readlink "$link") -> $link"
-              rm -f "$link"
-            done
+          if [ -n "$broken" ]; then
+            echo "$broken" | while read link; do rm -f "$link"; done
           fi
 
       # ─────────────────────────────────────────────
@@ -200,7 +158,6 @@ jobs:
         run: |
           cp $GITHUB_WORKSPACE/defconfig/${{ env.DEFCONFIG }} \
              $GITHUB_WORKSPACE/kernel_source/arch/arm64/configs/${{ env.DEFCONFIG }}
-          echo "==> Defconfig placed."
 
       # ─────────────────────────────────────────────
       # 6. BUILD KERNEL
@@ -212,6 +169,11 @@ jobs:
           GCC32_DIR="$GITHUB_WORKSPACE/toolchain/gcc-arm32"
 
           export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
+
+          # Use disk-backed TMPDIR to prevent tmpfs exhaustion during Clang LLVM bitcode generation
+          mkdir -p $GITHUB_WORKSPACE/build_tmp
+          export TMPDIR=$GITHUB_WORKSPACE/build_tmp
+          echo "==> Set TMPDIR=$TMPDIR"
 
           export ARCH=arm64
           export SUBARCH=arm64
@@ -239,36 +201,16 @@ jobs:
 
           cd $GITHUB_WORKSPACE/kernel_source
 
-          echo "============================================"
-          echo "  Step 1: Generate .config from stock defconfig"
-          echo "============================================"
           make "${MAKE_ARGS[@]}" ${{ env.DEFCONFIG }}
 
-          echo "============================================"
-          echo "  Step 2: CRITICAL — Disable LOCALVERSION_AUTO"
-          echo "============================================"
-          scripts/config --file out/.config \
-            --disable LOCALVERSION_AUTO
-          scripts/config --file out/.config \
-            --set-str LOCALVERSION "-qgki"
+          scripts/config --file out/.config --disable LOCALVERSION_AUTO
+          scripts/config --file out/.config --set-str LOCALVERSION "-qgki"
 
           make "${MAKE_ARGS[@]}" olddefconfig
 
-          echo "==> Verifying critical config values:"
-          grep -E "CONFIG_LOCALVERSION=|CONFIG_LOCALVERSION_AUTO=|CONFIG_MODVERSIONS=|CONFIG_MODULE_SIG" out/.config || true
-
-          echo "============================================"
-          echo "  Step 3: Build kernel (${{ env.KERNEL_IMAGE }})"
-          echo "  Free space before build:"
-          df -h /
-          echo "============================================"
-          make "${MAKE_ARGS[@]}" -j$(nproc --all) ${{ env.KERNEL_IMAGE }}
-
-          echo "============================================"
-          echo "  Build complete!"
-          echo "============================================"
-          ls -la out/arch/arm64/boot/${{ env.KERNEL_IMAGE }}
-          df -h /
+          echo "==> Building kernel..."
+          # Use -j2 explicitly to prevent OOM killer on 7GB GitHub runner
+          make "${MAKE_ARGS[@]}" -j2 ${{ env.KERNEL_IMAGE }}
 
       # ─────────────────────────────────────────────
       # 7. ANYKERNEL3 PACKAGING
@@ -287,11 +229,7 @@ jobs:
 
           DATESTAMP=$(date +%Y%m%d-%H%M)
           ZIP_NAME="StockEquiv-OP9Pro-${DATESTAMP}.zip"
-          zip -r9 "$GITHUB_WORKSPACE/${ZIP_NAME}" \
-            . -x '.git/*' -x '*.zip'
-
-          echo "==> Created: ${ZIP_NAME}"
-          ls -lh "$GITHUB_WORKSPACE/${ZIP_NAME}"
+          zip -r9 "$GITHUB_WORKSPACE/${ZIP_NAME}" . -x '.git/*' -x '*.zip'
 
       # ─────────────────────────────────────────────
       # 8. UPLOAD ARTIFACT
