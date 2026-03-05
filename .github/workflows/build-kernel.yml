@@ -23,7 +23,8 @@ jobs:
 
     steps:
       # ─────────────────────────────────────────────
-      # 0. FREE DISK SPACE
+      # 0. FREE DISK SPACE (keep swap-storage: false
+      #    so we keep the default 4GB swap)
       # ─────────────────────────────────────────────
       - name: Maximize disk space
         uses: jlumbroso/free-disk-space@main
@@ -34,11 +35,23 @@ jobs:
           haskell: true
           large-packages: true
           docker-images: true
-          swap-storage: true
+          swap-storage: false
 
-      - name: Show available disk space
+      # ─────────────────────────────────────────────
+      # 0b. Create an extra large swap file to
+      #     survive Clang linking phase OOM.
+      #     GitHub runners have ~7GB RAM; Clang ThinLTO
+      #     can easily spike to 12GB+.
+      # ─────────────────────────────────────────────
+      - name: Create 10GB swap file
         run: |
-          echo "==> Disk space after cleanup:"
+          echo "==> Creating 10GB swap file on disk..."
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "==> Swap enabled:"
+          free -h
           df -h /
 
       # ─────────────────────────────────────────────
@@ -90,7 +103,6 @@ jobs:
       # ─────────────────────────────────────────────
       - name: Clone AOSP Clang 11 (r383902b1) from GitHub mirror
         run: |
-          echo "==> Cloning Clang 11.0.2 (r383902b1) from GitHub mirror..."
           git clone --depth=1 \
             https://github.com/anrui2032/android_prebuilts_clang_host_linux-x86_clang-r383902b1.git \
             $GITHUB_WORKSPACE/toolchain/clang-r383902b1
@@ -101,6 +113,8 @@ jobs:
           CLANG_BIN="$GITHUB_WORKSPACE/toolchain/clang-r383902b1/bin/clang"
           if [ ! -f "$CLANG_BIN" ]; then
             echo "ERROR: clang binary not found!"
+            ls -la $GITHUB_WORKSPACE/toolchain/clang-r383902b1/ || true
+            find $GITHUB_WORKSPACE/toolchain/clang-r383902b1 -maxdepth 3 -name "clang" -type f 2>/dev/null | head -5
             exit 1
           fi
           "$CLANG_BIN" --version
@@ -116,6 +130,13 @@ jobs:
             https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git \
             $GITHUB_WORKSPACE/toolchain/gcc-arm32
           rm -rf $GITHUB_WORKSPACE/toolchain/gcc-arm32/.git
+
+      - name: Show disk and memory before build
+        run: |
+          echo "==> Disk:"
+          df -h /
+          echo "==> Memory:"
+          free -h
 
       # ─────────────────────────────────────────────
       # 4. RESOLVE OPLUS VENDOR SYMLINKS
@@ -170,7 +191,7 @@ jobs:
 
           export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
 
-          # Use disk-backed TMPDIR
+          # Use disk-backed TMPDIR so Clang bitcode files don't fill RAM
           mkdir -p $GITHUB_WORKSPACE/build_tmp
           export TMPDIR=$GITHUB_WORKSPACE/build_tmp
 
@@ -199,29 +220,29 @@ jobs:
           )
 
           cd $GITHUB_WORKSPACE/kernel_source
+
           make "${MAKE_ARGS[@]}" ${{ env.DEFCONFIG }}
 
-          echo "==> Overriding CONFIGs to prevent OOM killer on GH Runners..."
+          # Patch config: disable LOCALVERSION_AUTO, LTO and sanitizers
           scripts/config --file out/.config --disable LOCALVERSION_AUTO
           scripts/config --file out/.config --set-str LOCALVERSION "-qgki"
-
-          # Explicitly Disable LTO to prevent massive RAM exhaustion during compile/link
           scripts/config --file out/.config --disable LTO_CLANG
           scripts/config --file out/.config --disable LTO_CLANG_THIN
           scripts/config --file out/.config --disable LTO_CLANG_FULL
           scripts/config --file out/.config --enable LTO_NONE
-          
-          # Also disable KASAN/UBSAN usually active on debugging configs
           scripts/config --file out/.config --disable KASAN
           scripts/config --file out/.config --disable UBSAN
 
           make "${MAKE_ARGS[@]}" olddefconfig
 
-          echo "==> Verifying LTO is disabled:"
-          grep -E "CONFIG_LTO=" out/.config || true
+          echo "==> Memory before compilation:"
+          free -h
 
-          echo "==> Building kernel..."
-          make "${MAKE_ARGS[@]}" -j2 ${{ env.KERNEL_IMAGE }}
+          echo "==> Building kernel with -j4 (swap provides fallback RAM)..."
+          make "${MAKE_ARGS[@]}" -j4 ${{ env.KERNEL_IMAGE }}
+
+          echo "==> Build complete!"
+          ls -la out/arch/arm64/boot/${{ env.KERNEL_IMAGE }}
 
       # ─────────────────────────────────────────────
       # 7. ANYKERNEL3 PACKAGING
@@ -241,6 +262,8 @@ jobs:
           DATESTAMP=$(date +%Y%m%d-%H%M)
           ZIP_NAME="StockEquiv-OP9Pro-${DATESTAMP}.zip"
           zip -r9 "$GITHUB_WORKSPACE/${ZIP_NAME}" . -x '.git/*' -x '*.zip'
+          echo "==> Created: ${ZIP_NAME}"
+          ls -lh "$GITHUB_WORKSPACE/${ZIP_NAME}"
 
       # ─────────────────────────────────────────────
       # 8. UPLOAD ARTIFACT
