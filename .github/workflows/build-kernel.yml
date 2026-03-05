@@ -37,26 +37,18 @@ jobs:
           swap-storage: true
 
       # ─────────────────────────────────────────────
-      # 0b. Add a large swap file to survive Clang OOM.
-      #     The free-disk-space action removes the default
-      #     swap to free space. We recreate it using the
-      #     120GB disk instead of RAM.
+      # 0b. Add swap so Clang survives linking phase
       # ─────────────────────────────────────────────
-      - name: Create 8GB swap file
+      - name: Create swap file
         run: |
-          echo "==> Setting up swap..."
-          # Turn off any existing swap first (free-disk-space may have left state)
           sudo swapoff -a 2>/dev/null || true
-          # Remove any leftover swapfile
           sudo rm -f /swapfile /mnt/swapfile
-          # Create fresh 8GB swapfile on the large disk
           sudo fallocate -l 8G /mnt/swapfile
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
-          echo "==> Swap ready:"
-          free -h
-          df -h /
+          echo "==> Memory after swap setup:"; free -h
+          echo "==> Disk:"; df -h /
 
       # ─────────────────────────────────────────────
       # 1. CHECKOUT SOURCES
@@ -129,19 +121,18 @@ jobs:
             $GITHUB_WORKSPACE/toolchain/gcc-arm32
           rm -rf $GITHUB_WORKSPACE/toolchain/gcc-arm32/.git
 
-      - name: Show disk and memory before build
-        run: |
-          echo "==> Disk:"; df -h /
-          echo "==> Memory:"; free -h
-
       # ─────────────────────────────────────────────
-      # 4. RESOLVE OPLUS VENDOR SYMLINKS
+      # 4. RESOLVE OPLUS VENDOR + TECHPACK SYMLINKS
       # ─────────────────────────────────────────────
-      - name: Resolve OPlus vendor symlinks
+      - name: Resolve cross-tree symlinks
         run: |
           KERNEL_SRC="$GITHUB_WORKSPACE/kernel_source"
           DT_SRC="$GITHUB_WORKSPACE/kernel_modules_devicetree"
 
+          echo "==> Device tree contents (top level):"
+          ls "$DT_SRC/"
+
+          # vendor/ symlink (OPlus headers)
           if [ -d "$DT_SRC/vendor" ]; then
             ln -sfn "$DT_SRC/vendor" "$GITHUB_WORKSPACE/vendor"
             ln -sfn "$DT_SRC/vendor" "$KERNEL_SRC/vendor" 2>/dev/null || true
@@ -151,6 +142,18 @@ jobs:
             ln -sfn "$DT_SRC/vendor" "$WORKSPACE_GRANDPARENT/vendor" 2>/dev/null || true
           fi
 
+          # techpack/ symlink (QTI audio/camera/display/data-kernel drivers)
+          # The kernel Makefile expects techpack/* to exist inside the kernel tree.
+          if [ -d "$DT_SRC/techpack" ]; then
+            echo "==> Linking DT techpack into kernel source..."
+            ln -sfn "$DT_SRC/techpack" "$KERNEL_SRC/techpack"
+          else
+            echo "WARNING: techpack not found in device tree!"
+            echo "==> Searching for it..."
+            find "$DT_SRC" -maxdepth 3 -name "audio" -type d 2>/dev/null | head -5
+          fi
+
+          # kernel/msm-5.4 symlinks (for relative includes)
           mkdir -p "$GITHUB_WORKSPACE/kernel"
           ln -sfn "$KERNEL_SRC" "$GITHUB_WORKSPACE/kernel/msm-5.4"
           mkdir -p "$DT_SRC/kernel"
@@ -160,8 +163,12 @@ jobs:
             ln -sfn "$KERNEL_SRC" "$WORKSPACE_PARENT/kernel/msm-5.4" 2>/dev/null || true
           fi
 
-          broken=$(find "$KERNEL_SRC" -type l ! -exec test -e {} \; -print 2>/dev/null || true)
-          [ -n "$broken" ] && echo "$broken" | xargs rm -f || true
+          echo "==> kernel_source top-level after symlinks:"
+          ls -la "$KERNEL_SRC/"
+
+          # Remove any broken symlinks in kernel source
+          find "$KERNEL_SRC" -maxdepth 3 -type l ! -exec test -e {} \; -print 2>/dev/null \
+            | xargs rm -f 2>/dev/null || true
 
       # ─────────────────────────────────────────────
       # 5. PREPARE DEFCONFIG
@@ -226,7 +233,8 @@ jobs:
 
           echo "==> Memory before compilation:"; free -h
 
-          make "${MAKE_ARGS[@]}" -j4 ${{ env.KERNEL_IMAGE }}
+          # -j2 to reduce per-process peak RAM (less OOM pressure than -j4)
+          make "${MAKE_ARGS[@]}" -j2 ${{ env.KERNEL_IMAGE }}
 
           echo "==> Build complete!"
           ls -la out/arch/arm64/boot/${{ env.KERNEL_IMAGE }}
