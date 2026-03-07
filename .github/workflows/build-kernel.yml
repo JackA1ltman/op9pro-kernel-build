@@ -149,6 +149,25 @@ jobs:
           done
           echo "==> Vendor symlink resolution complete."
 
+      - name: Overlay Oplus C Source Directories
+        run: |
+          KERNEL_SRC="$GITHUB_WORKSPACE/kernel_source"
+          DT_SRC="$GITHUB_WORKSPACE/kernel_modules_devicetree"
+
+          echo "==> Overlaying Oplus performance features into kernel source..."
+          
+          if [ -d "$DT_SRC/vendor/oplus/kernel/oplus_performance/healthinfo" ]; then
+            echo "  --> Copying healthinfo..."
+            cp -rn "$DT_SRC/vendor/oplus/kernel/oplus_performance/healthinfo/"* "$KERNEL_SRC/" || true
+          fi
+
+          if [ -d "$DT_SRC/vendor/oplus/kernel/oplus_performance/sched_assist" ]; then
+            echo "  --> Copying sched_assist..."
+            cp -rn "$DT_SRC/vendor/oplus/kernel/oplus_performance/sched_assist/"* "$KERNEL_SRC/" || true
+          fi
+
+          echo "==> Overlay complete."
+
       - name: Normalize Kconfig line endings
         run: |
           echo "==> Converting CRLF to LF in Kconfig files..."
