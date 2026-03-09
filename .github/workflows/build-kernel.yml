@@ -108,10 +108,10 @@ jobs:
         run: |
           echo "==> Syncing native AOSP structure from Device Tree (covers device, vendor, techpack)..."
           rsync -a $GITHUB_WORKSPACE/kernel_modules_devicetree/ $GITHUB_WORKSPACE/
-          
+
           echo "==> Merging out-of-tree Oplus Kernel Modifications..."
           rsync -a $GITHUB_WORKSPACE/kernel_modules_devicetree/vendor/oplus/kernel/ $GITHUB_WORKSPACE/kernel/msm-5.4/
-          
+
           # Clean up devicetree repo to save space
           rm -rf $GITHUB_WORKSPACE/kernel_modules_devicetree
 
@@ -153,13 +153,13 @@ jobs:
               fi
           }
           export -f append_cmd
-          
+
           # Source from the true location
           . ${ROOT_DIR}/kernel/msm-5.4/build.config.msm.lahaina
-          
+
           DEFCONFIG=ossi_oos14_defconfig
           PRE_DEFCONFIG_CMDS=""
-          LOCALVERSION="-qgki"
+          LOCALVERSION="-qgki-gd2a1055adeb0"
           EOF
 
           # Prevent script failures if they explicitly look for _setup_env in legacy paths
