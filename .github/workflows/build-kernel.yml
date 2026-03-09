@@ -33,7 +33,7 @@ jobs:
         with:
           repository: ${{ env.KERNEL_REPO }}
           ref: ${{ env.KERNEL_BRANCH }}
-          path: kernel_source
+          path: kernel
           fetch-depth: 1
 
       - name: Checkout device tree & modules
@@ -99,18 +99,30 @@ jobs:
       - name: Clone AOSP Build Scripts
         run: |
           echo "==> Cloning AOSP build scripts (append_cmd provider)..."
-          git clone https://android.googlesource.com/kernel/build --depth=1 $GITHUB_WORKSPACE/kernel_source/build
+          git clone https://android.googlesource.com/kernel/build --depth=1 $GITHUB_WORKSPACE/kernel/build
 
       # ─────────────────────────────────────────────
-      # 4. MERGE DEVICE TREE & SOURCE
+      # 4. EMULATE AOSP DIRECTORY STRUCTURE
       # ─────────────────────────────────────────────
-      - name: Merge Device Tree into Kernel Source
+      - name: Construct Native AOSP Workspace Structure
         run: |
-          echo "==> Merging device tree into kernel source..."
-          cp -a $GITHUB_WORKSPACE/kernel_modules_devicetree/. $GITHUB_WORKSPACE/kernel_source/
+          echo "==> Constructing Native AOSP Workspace Structure..."
           
-          echo "==> Cleaning up device tree to reclaim space..."
-          rm -rf "$GITHUB_WORKSPACE/kernel_modules_devicetree"
+          # Move vendor and device from devicetree directly to workspace root
+          # This satisfies the 5-layer deep symlinks inside the kernel! e.g ../../../../../vendor/oplus/kernel/...
+          mv $GITHUB_WORKSPACE/kernel_modules_devicetree/vendor $GITHUB_WORKSPACE/
+          mv $GITHUB_WORKSPACE/kernel_modules_devicetree/device $GITHUB_WORKSPACE/
+          
+          # Move techpack to the kernel tree properly
+          mkdir -p $GITHUB_WORKSPACE/kernel/techpack
+          rsync -a $GITHUB_WORKSPACE/kernel_modules_devicetree/kernel/msm-5.4/techpack/ $GITHUB_WORKSPACE/kernel/techpack/
+          
+          # Clean up devicetree repo to save space
+          rm -rf $GITHUB_WORKSPACE/kernel_modules_devicetree
+
+          # Provide the common config that early wrappers explicitly expect
+          ln -sfn $GITHUB_WORKSPACE/device/qcom/kernelscripts/upstream/build.config.common \
+            $GITHUB_WORKSPACE/kernel/build.config.common
 
       # ─────────────────────────────────────────────
       # 5. PREPARE DEFCONFIG
@@ -118,51 +130,16 @@ jobs:
       - name: Place stock defconfig
         run: |
           cp $GITHUB_WORKSPACE/defconfig/${{ env.DEFCONFIG }} \
-             $GITHUB_WORKSPACE/kernel_source/arch/arm64/configs/${{ env.DEFCONFIG }}
+             $GITHUB_WORKSPACE/kernel/arch/arm64/configs/${{ env.DEFCONFIG }}
           echo "==> Defconfig placed at arch/arm64/configs/${{ env.DEFCONFIG }}"
 
       # ─────────────────────────────────────────────
-      # 6. EMULATE AOSP DIRECTORY STRUCTURE
-      # ─────────────────────────────────────────────
-      - name: Emulate AOSP Directory Structure
-        run: |
-          echo "==> Emulating AOSP directory structure via symlinks..."
-          # QCOM scripts expect AOSP root with kernel/, device/, vendor/, build/
-          
-          # Provide exact symlink requested by user to be safe
-          mkdir -p $GITHUB_WORKSPACE/kernel_source/kernel
-          ln -sfn $GITHUB_WORKSPACE/kernel_source/device/qcom/kernelscripts/upstream/build.config.common \
-            $GITHUB_WORKSPACE/kernel_source/kernel/build.config.common
-          
-          # Create an emulated AOSP root properly supporting 'cd kernel && make'
-          mkdir -p $GITHUB_WORKSPACE/aosp_root
-          ln -sfn $GITHUB_WORKSPACE/kernel_source $GITHUB_WORKSPACE/aosp_root/kernel
-          ln -sfn $GITHUB_WORKSPACE/kernel_source/device $GITHUB_WORKSPACE/aosp_root/device
-          ln -sfn $GITHUB_WORKSPACE/kernel_source/vendor $GITHUB_WORKSPACE/aosp_root/vendor
-          ln -sfn $GITHUB_WORKSPACE/kernel_source/build $GITHUB_WORKSPACE/aosp_root/build
-          # Also symlink any extra top level configs just in case
-          ln -sfn $GITHUB_WORKSPACE/kernel_source/build.config.* $GITHUB_WORKSPACE/aosp_root/ 2>/dev/null || true
-
-      # ─────────────────────────────────────────────
-      # 6.5 MASS OVERLAY OPLUS & TECHPACK
-      # ─────────────────────────────────────────────
-      - name: Mass Overlay Oplus & Techpack Sources
-        run: |
-          echo "==> Running deep merge of Oplus & Techpack sources using rsync..."
-          # Merge Oplus kernel modifications
-          rsync -a --ignore-existing $GITHUB_WORKSPACE/kernel_source/vendor/oplus/kernel/ $GITHUB_WORKSPACE/kernel_source/
-          
-          # Merge Techpack
-          mkdir -p $GITHUB_WORKSPACE/kernel_source/techpack
-          rsync -a --ignore-existing $GITHUB_WORKSPACE/kernel_source/kernel/msm-5.4/techpack/ $GITHUB_WORKSPACE/kernel_source/techpack/
-
-      # ─────────────────────────────────────────────
-      # 7. BUILD WITH WRAPPER SCRIPT
+      # 6. BUILD WITH WRAPPER SCRIPT
       # ─────────────────────────────────────────────
       - name: Generate Proxy Config & Build
         run: |
-          # Build from the emulated AOSP root
-          cd $GITHUB_WORKSPACE/aosp_root
+          # Build strictly from workspace root
+          cd $GITHUB_WORKSPACE
 
           # ── Toolchain paths ──
           CLANG_DIR="$GITHUB_WORKSPACE/toolchain/clang/clang-r383902b"
@@ -171,7 +148,7 @@ jobs:
 
           export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
 
-          # Create Proxy Config in aosp_root
+          # Create Proxy Config
           cat << 'EOF' > build.config.custom
           function append_cmd() {
               if [ ! -z "${!1}" ]; then
@@ -190,9 +167,9 @@ jobs:
           LOCALVERSION="-qgki"
           EOF
 
-          # Ensure _setup_env.sh can be found by build.sh if it expects it in build/
-          mkdir -p device/qcom/build
-          cp device/qcom/kernelscripts/_setup_env.sh device/qcom/build/_setup_env.sh || true
+          # Prevent script failures if they explicitly look for _setup_env in legacy paths
+          mkdir -p $GITHUB_WORKSPACE/device/qcom/build
+          cp $GITHUB_WORKSPACE/device/qcom/kernelscripts/_setup_env.sh $GITHUB_WORKSPACE/device/qcom/build/_setup_env.sh || true
 
           export BUILD_CONFIG=build.config.custom
           export CC=clang
@@ -212,7 +189,7 @@ jobs:
           bash device/qcom/kernelscripts/build.sh LLVM=1 LLVM_IAS=1 O=out
 
       # ─────────────────────────────────────────────
-      # 8. ANYKERNEL3 PACKAGING
+      # 7. ANYKERNEL3 PACKAGING
       # ─────────────────────────────────────────────
       - name: Clone AnyKernel3
         run: |
@@ -231,25 +208,21 @@ jobs:
 
           # Find the compiled kernel image dynamically
           echo "==> Searching for compiled kernel image..."
-          KERNEL_BIN=$(find $GITHUB_WORKSPACE/aosp_root/out -type f -name "${{ env.KERNEL_IMAGE }}" | grep "arch/arm64/boot" | head -n 1)
+          KERNEL_BIN=$(find $GITHUB_WORKSPACE/out -type f -name "${{ env.KERNEL_IMAGE }}" | grep "arch/arm64/boot" | head -n 1)
 
           if [ -z "$KERNEL_BIN" ]; then
             echo "Searching all of out/ as fallback..."
-            KERNEL_BIN=$(find $GITHUB_WORKSPACE/aosp_root/out -type f -name "${{ env.KERNEL_IMAGE }}" | head -n 1)
+            KERNEL_BIN=$(find $GITHUB_WORKSPACE/out -type f -name "${{ env.KERNEL_IMAGE }}" | head -n 1)
           fi
 
           if [ -z "$KERNEL_BIN" ]; then
-            echo "Searching kernel_source out/ just in case..."
-            KERNEL_BIN=$(find $GITHUB_WORKSPACE/kernel_source -type f -name "${{ env.KERNEL_IMAGE }}" | head -n 1)
+            echo "Searching kernel out/ just in case..."
+            KERNEL_BIN=$(find $GITHUB_WORKSPACE/kernel -type f -name "${{ env.KERNEL_IMAGE }}" | head -n 1)
           fi
 
           if [ -z "$KERNEL_BIN" ]; then
             echo "ERROR: Kernel image not found in out/ directory!"
-            # Fallback to broad search just in case
-            KERNEL_BIN=$(find $GITHUB_WORKSPACE/kernel_source -type f -name "${{ env.KERNEL_IMAGE }}" | head -n 1)
-            if [ -z "$KERNEL_BIN" ]; then
-              exit 1
-            fi
+            exit 1
           fi
 
           echo "==> Found Kernel Image: $KERNEL_BIN"
@@ -268,7 +241,7 @@ jobs:
           ls -lh "$GITHUB_WORKSPACE/${ZIP_NAME}"
 
       # ─────────────────────────────────────────────
-      # 9. UPLOAD ARTIFACT
+      # 8. UPLOAD ARTIFACT
       # ─────────────────────────────────────────────
       - name: Upload kernel ZIP artifact
         uses: actions/upload-artifact@v4
