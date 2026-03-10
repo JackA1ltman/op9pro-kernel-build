@@ -106,8 +106,11 @@ jobs:
       # ─────────────────────────────────────────────
       - name: Construct Native AOSP Workspace Structure
         run: |
-          echo "==> Syncing native AOSP structure from Device Tree (covers device, vendor, techpack)..."
-          rsync -a $GITHUB_WORKSPACE/kernel_modules_devicetree/ $GITHUB_WORKSPACE/
+          echo "==> Syncing ONLY device/ and vendor/ from Device Tree to prevent kernel/ tree pollution..."
+          mkdir -p $GITHUB_WORKSPACE/device
+          mkdir -p $GITHUB_WORKSPACE/vendor
+          rsync -a $GITHUB_WORKSPACE/kernel_modules_devicetree/device/ $GITHUB_WORKSPACE/device/
+          rsync -a $GITHUB_WORKSPACE/kernel_modules_devicetree/vendor/ $GITHUB_WORKSPACE/vendor/
 
           # Clean up devicetree repo to save space
           rm -rf $GITHUB_WORKSPACE/kernel_modules_devicetree
