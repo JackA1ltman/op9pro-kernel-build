@@ -157,6 +157,18 @@ jobs:
           export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
 
           # Create Proxy Config
+          # ────────────────────────────────────────────────────────────
+          # CRITICAL: The defconfig fragment chain overrides LOCALVERSION:
+          #   base defconfig → "-qgki"
+          #   lahaina_consolidate.config → "-qgki-consolidate"
+          #   lahaina_debug.config → "-qgki-debug"
+          #
+          # Our LOCALVERSION shell var is ignored because Kconfig fragments
+          # run AFTER and override it. We MUST use POST_DEFCONFIG_CMDS to
+          # force-set CONFIG_LOCALVERSION in .config after all fragments
+          # are merged. This ensures the vermagic matches stock:
+          #   5.4.xxx-qgki-gd2a1055adeb0
+          # ────────────────────────────────────────────────────────────
           cat << 'EOF' > build.config.custom
           function append_cmd() {
               if [ ! -z "${!1}" ]; then
@@ -170,7 +182,13 @@ jobs:
           # Source from the true location
           . ${ROOT_DIR}/kernel/msm-5.4/build.config.msm.lahaina
 
-          LOCALVERSION="-qgki-gd2a1055adeb0"
+          # Force the correct stock vermagic AFTER all defconfig fragments
+          function fix_localversion() {
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config \
+                --set-str LOCALVERSION "-qgki-gd2a1055adeb0"
+              (cd ${KERNEL_DIR} && make "${TOOL_ARGS[@]}" O=${OUT_DIR} ${MAKE_ARGS} olddefconfig)
+          }
+          append_cmd POST_DEFCONFIG_CMDS 'fix_localversion'
           EOF
 
           # Prevent script failures if they explicitly look for _setup_env in legacy paths
