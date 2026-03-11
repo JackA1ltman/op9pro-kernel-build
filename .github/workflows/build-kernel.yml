@@ -106,15 +106,33 @@ jobs:
       # ─────────────────────────────────────────────
       - name: Construct Native AOSP Workspace Structure
         run: |
-          echo "==> Syncing device/, vendor/, and techpack/ from Device Tree..."
+          echo "==> Syncing device/ and vendor/ from Device Tree..."
           mkdir -p $GITHUB_WORKSPACE/device
           mkdir -p $GITHUB_WORKSPACE/vendor
           rsync -a $GITHUB_WORKSPACE/kernel_modules_devicetree/device/ $GITHUB_WORKSPACE/device/
           rsync -a $GITHUB_WORKSPACE/kernel_modules_devicetree/vendor/ $GITHUB_WORKSPACE/vendor/
 
-          # Critically required for QCOM audio/display/camera Makefiles
-          mkdir -p $GITHUB_WORKSPACE/kernel/msm-5.4/techpack/
-          rsync -a $GITHUB_WORKSPACE/kernel_modules_devicetree/kernel/msm-5.4/techpack/ $GITHUB_WORKSPACE/kernel/msm-5.4/techpack/
+          # ──────────────────────────────────────────────────────────
+          # DO NOT rsync techpack/ from Device Tree!
+          # The base kernel has techpack/{audio,camera,display,video,dataipa}
+          # as empty git submodule stubs. techpack/Kbuild auto-discovers
+          # all subdirectories via `find` and compiles them.
+          # Copying full source trees from the device tree would cause
+          # EVERY driver to be compiled twice into vmlinux, producing
+          # fatal "exported twice" symbol collisions.
+          #
+          # Instead, create minimal stub Makefiles so `make mrproper`
+          # and the Kbuild traversal succeed without actual source.
+          # ──────────────────────────────────────────────────────────
+          echo "==> Creating techpack stub Makefiles (no source duplication)..."
+          for subdir in audio camera display video dataipa; do
+            dir="$GITHUB_WORKSPACE/kernel/msm-5.4/techpack/${subdir}"
+            mkdir -p "${dir}"
+            # Create an empty Makefile so Kbuild traversal doesn't fail
+            echo "# Stub - built as external module, not inline" > "${dir}/Makefile"
+            # Create an empty Kconfig so menuconfig doesn't break
+            touch "${dir}/Kconfig"
+          done
 
           # Clean up devicetree repo to save space
           rm -rf $GITHUB_WORKSPACE/kernel_modules_devicetree
