@@ -272,12 +272,16 @@ jobs:
           # Copy our device-specific anykernel.sh
           cp $GITHUB_WORKSPACE/anykernel/anykernel.sh ./anykernel.sh
 
-          # Find the compiled kernel image dynamically
+          # Find the compiled kernel image dynamically across the ENTIRE workspace
           echo "==> Searching for compiled kernel image..."
-          KERNEL_BIN=$(find $GITHUB_WORKSPACE/out/ -name "Image" -type f | head -n 1)
+          # Print all locations for debugging in the log
+          find $GITHUB_WORKSPACE -name "Image" -type f
+          
+          # Pick the first result, ignoring the AnyKernel directory
+          KERNEL_BIN=$(find $GITHUB_WORKSPACE -name "Image" -type f | grep -v "AnyKernel3" | head -n 1)
 
           if [ -z "$KERNEL_BIN" ]; then
-            echo "ERROR: Kernel image not found in out/ directory!"
+            echo "ERROR: Kernel image not found anywhere in workspace!"
             exit 1
           fi
 
