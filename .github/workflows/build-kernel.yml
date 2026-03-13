@@ -1,6 +1,10 @@
-name: Build OnePlus 9 Pro Stock Kernel
+name: Build OnePlus 9 Pro Stock-Equivalent Kernel
 
 on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 env:
@@ -15,113 +19,262 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 240
 
     steps:
+      # 1) Checkout sources
+      - name: Checkout build scripts
+        uses: actions/checkout@v4
 
-    - name: Checkout build scripts
-      uses: actions/checkout@v4
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KERNEL_REPO }}
+          ref: ${{ env.KERNEL_BRANCH }}
+          path: kernel/msm-5.4
+          fetch-depth: 1
 
-    - name: Checkout kernel source
-      uses: actions/checkout@v4
-      with:
-        repository: ${{ env.KERNEL_REPO }}
-        ref: ${{ env.KERNEL_BRANCH }}
-        path: kernel/msm-5.4
-        fetch-depth: 1
+      - name: Checkout device tree & modules
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DEVICE_TREE_REPO }}
+          ref: ${{ env.DEVICE_TREE_BRANCH }}
+          path: kernel_modules_devicetree
+          fetch-depth: 1
 
-    - name: Checkout device tree
-      uses: actions/checkout@v4
-      with:
-        repository: ${{ env.DEVICE_TREE_REPO }}
-        ref: ${{ env.DEVICE_TREE_BRANCH }}
-        path: kernel_modules_devicetree
-        fetch-depth: 1
+      # 2) Maximize build space (optional)
+      - name: Maximize build space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/powershell
+          sudo rm -rf /usr/local/share/chromium || true
 
-    - name: Install dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y \
-        bc bison build-essential ccache curl flex git \
-        gperf libncurses-dev libssl-dev libelf-dev \
-        python3 zip rsync cpio lz4
+      # 3) Install host deps (including dos2unix)
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex \
+            git gnupg gperf imagemagick lib32ncurses5-dev \
+            lib32readline-dev lib32z1-dev libelf-dev \
+            liblz4-tool libncurses5-dev libsdl1.2-dev \
+            libssl-dev libxml2 libxml2-utils lzop \
+            pngcrush rsync schedtool squashfs-tools \
+            xsltproc zip zlib1g-dev python3 python-is-python3 \
+            cpio dos2unix rsync
 
-    - name: Clone Toolchains
-      run: |
+      # 4) Clone toolchains & build helper
+      - name: Clone Toolchains & AOSP build helper
+        run: |
+          set -e
+          echo "==> Cloning official AOSP Clang 11.0.2..."
+          rm -rf $GITHUB_WORKSPACE/toolchain/clang
+          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android11-release --depth=1 $GITHUB_WORKSPACE/toolchain/clang
+          echo "==> Cloning GCC 4.9 aarch64 cross-compiler..."
+          git clone --depth=1 -b lineage-19.1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git $GITHUB_WORKSPACE/toolchain/gcc-aarch64
+          echo "==> Cloning GCC 4.9 arm32 cross-compiler..."
+          git clone --depth=1 -b lineage-19.1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git $GITHUB_WORKSPACE/toolchain/gcc-arm32
+          echo "==> Cloning AOSP build scripts..."
+          rm -rf $GITHUB_WORKSPACE/build
+          git clone https://android.googlesource.com/kernel/build --depth=1 $GITHUB_WORKSPACE/build
 
-        git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
-        -b android11-release --depth=1 toolchain/clang
+      # 5) Construct AOSP layout (device/vendor) and techpack handling
+      - name: Construct Native AOSP Workspace Structure
+        run: |
+          set -e
+          echo "==> Syncing device/ and vendor/ from Device Tree..."
+          mkdir -p $GITHUB_WORKSPACE/device
+          mkdir -p $GITHUB_WORKSPACE/vendor
+          rsync -a $GITHUB_WORKSPACE/kernel_modules_devicetree/device/ $GITHUB_WORKSPACE/device/ || true
+          rsync -a $GITHUB_WORKSPACE/kernel_modules_devicetree/vendor/ $GITHUB_WORKSPACE/vendor/ || true
 
-        git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 \
-        --depth=1 toolchain/gcc-aarch64
+          # If the device tree repo includes techpack sources (full sources), copying them into kernel tree
+          # will cause duplicate compilation. To avoid exported-twice, create minimal stubs ONLY if the kernel's techpack dirs are missing.
+          echo "==> Creating minimal techpack stubs only if kernel techpack folders are missing..."
+          for subdir in audio camera display video dataipa; do
+            dir="$GITHUB_WORKSPACE/kernel/msm-5.4/techpack/${subdir}"
+            if [ ! -d "${dir}" ]; then
+              mkdir -p "${dir}"
+              echo "# Stub - no inline sources" > "${dir}/Makefile"
+              touch "${dir}/Kconfig"
+            fi
+          done
 
-        git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 \
-        --depth=1 toolchain/gcc-arm32
+          # Remove the device tree clone to save space (we've copied what we need)
+          rm -rf $GITHUB_WORKSPACE/kernel_modules_devicetree || true
 
-        git clone https://android.googlesource.com/kernel/build \
-        --depth=1 build
+          # Provide the common config expected by Qualcomm wrapper
+          ln -sfn $GITHUB_WORKSPACE/device/qcom/kernelscripts/upstream/build.config.common \
+            $GITHUB_WORKSPACE/kernel/msm-5.4/build.config.common || true
 
-    - name: Prepare workspace
-      run: |
+          # Ensure any Kconfig files are normalized to LF (strip CRLF) to avoid "unsupported character" warnings
+          echo "==> Normalizing line endings for Kconfig files (dos2unix / strip CR)..."
+          find $GITHUB_WORKSPACE/kernel/msm-5.4 -type f -name 'Kconfig' -exec dos2unix {} \; || true
+          # Also convert any files under drivers/soc/oplus (observed problematic file)
+          if [ -d "$GITHUB_WORKSPACE/kernel/msm-5.4/drivers/soc/oplus" ]; then
+            find $GITHUB_WORKSPACE/kernel/msm-5.4/drivers/soc/oplus -type f -name 'Kconfig' -exec dos2unix {} \; || true
+            # fallback strip CRs for all text files in that tree
+            find $GITHUB_WORKSPACE/kernel/msm-5.4/drivers/soc/oplus -type f -exec sed -i 's/\r$//' {} \; || true
+          fi
 
-        mkdir -p device
-        mkdir -p vendor
+      # 5.5 Allocate swap to avoid OOM during link (LTO)
+      - name: Allocate Swap Space
+        run: |
+          sudo fallocate -l 10G /swapfile2 || sudo dd if=/dev/zero of=/swapfile2 bs=1M count=10240
+          sudo chmod 600 /swapfile2
+          sudo mkswap /swapfile2
+          sudo swapon /swapfile2
+          free -h
 
-        rsync -a kernel_modules_devicetree/device/ device/
-        rsync -a kernel_modules_devicetree/vendor/ vendor/
+      # 6) Prepare build config and run Qualcomm build wrapper (safe, minimal edits)
+      - name: Generate Proxy Config & Build (Qualcomm wrapper)
+        env:
+          ROOT_DIR: ${{ github.workspace }}
+        run: |
+          set -e
+          cd $GITHUB_WORKSPACE
 
-    - name: Setup toolchain path
-      run: |
+          CLANG_DIR="$GITHUB_WORKSPACE/toolchain/clang/clang-r383902b"
+          GCC64_DIR="$GITHUB_WORKSPACE/toolchain/gcc-aarch64"
+          GCC32_DIR="$GITHUB_WORKSPACE/toolchain/gcc-arm32"
 
-        CLANG_DIR=$GITHUB_WORKSPACE/toolchain/clang/clang-r383902b
+          export PATH="$CLANG_DIR/bin:$GCC64_DIR/bin:$GCC32_DIR/bin:$PATH"
 
-        echo "PATH=$CLANG_DIR/bin:$GITHUB_WORKSPACE/toolchain/gcc-aarch64/bin:$GITHUB_WORKSPACE/toolchain/gcc-arm32/bin:$PATH" >> $GITHUB_ENV
+          # IMPORTANT: do NOT force qgki-consolidate here. Let the OEM wrapper pick correct variant.
+          echo "==> (KEEP) Not forcing VARIANTS to qgki-consolidate; use OEM wrapper defaults."
 
-    - name: Build Kernel
-      run: |
+          # Force exact LOCALVERSION where present (safe)
+          CONFIGS_DIR="$GITHUB_WORKSPACE/kernel/msm-5.4/arch/arm64/configs"
+          if [ -d "$CONFIGS_DIR" ]; then
+            find "$CONFIGS_DIR" -type f \( -name "*.config" -o -name "*defconfig" \) -exec sed -i 's/CONFIG_LOCALVERSION="[^"]*"/CONFIG_LOCALVERSION="-qgki-gd2a1055adeb0"/g' {} || true \;
+          fi
+          echo "==> LOCALVERSION patched in fragments (best-effort)."
 
-        export ARCH=arm64
-        export SUBARCH=arm64
+          # Create Proxy build.config.custom to optionally append post-defconfig commands (keeps OEM wrapper behaviour)
+          cat << 'EOF' > build.config.custom
+          function append_cmd() {
+              if [ ! -z "${!1}" ]; then
+                  eval "$1=\"${!1} && \$2\""
+              else
+                  eval "$1=\"\$2\""
+              fi
+          }
+          export -f append_cmd
 
-        export CLANG_TRIPLE=aarch64-linux-gnu-
-        export CROSS_COMPILE=aarch64-linux-android-
-        export CROSS_COMPILE_COMPAT=arm-linux-androideabi-
+          . ${ROOT_DIR}/kernel/msm-5.4/build.config.msm.lahaina
 
-        export CC=clang
-        export LLVM=1
-        export LLVM_IAS=1
+          function fix_localversion() {
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config \
+                --set-str LOCALVERSION "-qgki-gd2a1055adeb0"
+              (cd ${KERNEL_DIR} && make "${TOOL_ARGS[@]}" O=${OUT_DIR} ${MAKE_ARGS} olddefconfig)
+          }
+          append_cmd POST_DEFCONFIG_CMDS 'fix_localversion'
+          EOF
 
-        cd kernel/msm-5.4
+          # Ensure build wrapper finds _setup_env.sh where it expects it (fallback copies)
+          mkdir -p $GITHUB_WORKSPACE/device/qcom/build
+          if [ -f "$GITHUB_WORKSPACE/device/qcom/kernelscripts/_setup_env.sh" ]; then
+            cp "$GITHUB_WORKSPACE/device/qcom/kernelscripts/_setup_env.sh" "$GITHUB_WORKSPACE/device/qcom/build/_setup_env.sh" || true
+            echo "Copied _setup_env.sh from device/qcom/kernelscripts"
+          elif [ -f "$GITHUB_WORKSPACE/kernel/msm-5.4/device/qcom/kernelscripts/_setup_env.sh" ]; then
+            cp "$GITHUB_WORKSPACE/kernel/msm-5.4/device/qcom/kernelscripts/_setup_env.sh" "$GITHUB_WORKSPACE/device/qcom/build/_setup_env.sh" || true
+            echo "Copied _setup_env.sh from kernel tree fallback"
+          else
+            echo "WARNING: _setup_env.sh not found in expected locations. build.sh may still fail."
+          fi
 
-        make O=out ARCH=arm64 ${{ env.DEFCONFIG }}
+          export BUILD_CONFIG=build.config.custom
+          export KERNEL_DIR=kernel/msm-5.4
 
-        make -j$(nproc) \
-        O=out \
-        ARCH=arm64 \
-        CC=clang \
-        LLVM=1 \
-        LLVM_IAS=1
+          # Toolchain vars for wrapper
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_COMPAT=arm-linux-androideabi-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export LLVM=1
+          export LLVM_IAS=1
 
-    - name: Verify kernel
-      run: |
+          # Neutralize -dirty vermagic suffix (optional but common practice)
+          find $GITHUB_WORKSPACE/kernel/msm-5.4/ -name ".git" -exec rm -rf {} + || true
+          echo "" > $GITHUB_WORKSPACE/kernel/msm-5.4/.scmversion || true
+          sed -i 's/echo "+"/echo ""/g' $GITHUB_WORKSPACE/kernel/msm-5.4/scripts/setlocalversion || true
 
-        file kernel/msm-5.4/out/arch/arm64/boot/Image
+          # Execute official Qualcomm/OEM build wrapper (it will generate the correct defconfig & build)
+          echo "============================================"
+          echo "  Executing Official QCOM Build Wrapper"
+          echo "============================================"
+          bash device/qcom/kernelscripts/build.sh LLVM=1 LLVM_IAS=1
 
-        strings kernel/msm-5.4/out/arch/arm64/boot/Image | grep qgki || true
+      # 7) Package AnyKernel zip (prefer lahaina-qgki image)
+      - name: Package kernel into flashable ZIP
+        run: |
+          set -e
+          # Prefer directories with 'lahaina' and 'qgki' in the name
+          RAW_IMAGE=""
+          for d in $(ls -1d $GITHUB_WORKSPACE/out/* 2>/dev/null || true); do
+            base=$(basename "$d")
+            if echo "$base" | grep -q "lahaina" && echo "$base" | grep -q "qgki"; then
+              cand="$d/dist/Image"
+              if [ -f "$cand" ]; then
+                RAW_IMAGE="$cand"
+                break
+              fi
+            fi
+          done
 
-    - name: Package kernel
-      run: |
+          # fallback: known name used previously
+          if [ -z "$RAW_IMAGE" ]; then
+            cand="$GITHUB_WORKSPACE/out/msm-5.4-lahaina-qgki-consolidate/dist/Image"
+            if [ -f "$cand" ]; then
+              RAW_IMAGE="$cand"
+            fi
+          fi
 
-        git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          if [ -z "$RAW_IMAGE" ] || [ ! -f "$RAW_IMAGE" ]; then
+            echo "ERROR: Kernel Image not found. Listing out/ tree for debugging:"
+            find $GITHUB_WORKSPACE/out -maxdepth 4 -type f -name Image || true
+            exit 1
+          fi
 
-        cp kernel/msm-5.4/out/arch/arm64/boot/Image AnyKernel3/
+          echo "==> Found Kernel Image: $RAW_IMAGE"
+          # quick vermagic check (print to log)
+          if command -v strings >/dev/null 2>&1; then
+            echo "=== vermagic (snippet) ==="
+            strings "$RAW_IMAGE" | grep -i vermagic || true
+            strings "$RAW_IMAGE" | egrep -i "clang|qgki|gd2a|gd2" || true
+            echo "========================="
+          fi
 
-        cd AnyKernel3
+          # Package with AnyKernel3
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git $GITHUB_WORKSPACE/AnyKernel3
+          cd $GITHUB_WORKSPACE/AnyKernel3
+          # cleanup example files
+          rm -rf modules patch ramdisk || true
+          rm -f README.md || true
+          # use user's anykernel.sh if present in repo/anykernel, else keep default
+          if [ -f "$GITHUB_WORKSPACE/anykernel/anykernel.sh" ]; then
+            cp "$GITHUB_WORKSPACE/anykernel/anykernel.sh" ./anykernel.sh
+          fi
+          cp "$RAW_IMAGE" ./${{ env.KERNEL_IMAGE }}
+          DATESTAMP=$(date +%Y%m%d-%H%M)
+          ZIP_NAME="StockEquiv-OP9Pro-${DATESTAMP}.zip"
+          zip -r9 "$GITHUB_WORKSPACE/${ZIP_NAME}" . -x '.git/*' -x '*.zip' || true
+          echo "==> Created: ${ZIP_NAME}"
+          ls -lh "$GITHUB_WORKSPACE/${ZIP_NAME}" || true
 
-        zip -r9 ../OP9Pro-Kernel.zip *
-
-    - name: Upload
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel
-        path: OP9Pro-Kernel.zip
+      # 8) Upload artifacts
+      - name: Upload kernel ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StockEquiv-OP9Pro-kernel
+          path: StockEquiv-OP9Pro-*.zip
+          retention-days: 30
+          if-no-files-found: error
