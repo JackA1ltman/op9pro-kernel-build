@@ -48,7 +48,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache curl flex git gnupg gperf \
             lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev \
-            libssl-dev lzop python3 python-is-python3 cpio dos2unix rsync zip
+            libssl-dev lzop python3 python-is-python3 cpio dos2unix rsync zip unzip
 
       - name: Clone Toolchains
         run: |
@@ -71,7 +71,7 @@ jobs:
 
       - name: Allocate Swap Space
         run: |
-          sudo fallocate -l 10G /swapfile2
+          sudo fallocate -l 10G /swapfile2 || sudo dd if=/dev/zero of=/swapfile2 bs=1M count=10240
           sudo chmod 600 /swapfile2
           sudo mkswap /swapfile2
           sudo swapon /swapfile2
@@ -128,11 +128,12 @@ jobs:
 
           bash device/qcom/kernelscripts/build.sh LLVM=1 LLVM_IAS=1
 
+      - name: Prepare FinalOutput Directory
+        run: mkdir -p $GITHUB_WORKSPACE/FinalOutput
+
       - name: Build Magisk Module for Out-of-Tree Modules
         run: |
-          mkdir -p $GITHUB_WORKSPACE/FinalOutput
           mkdir -p $GITHUB_WORKSPACE/MagiskModule/custom_ko
-          
           find $GITHUB_WORKSPACE/out -name "*.ko" -type f -exec cp {} $GITHUB_WORKSPACE/MagiskModule/custom_ko/ \;
           
           cat << 'EOF' > $GITHUB_WORKSPACE/MagiskModule/module.prop
@@ -141,7 +142,7 @@ jobs:
           version=v1.0
           versionCode=1
           author=CustomBuild
-          description=Systemlessly injects matching out-of-tree modules (Display/Audio/WLAN) for the newly flashed custom kernel.
+          description=Systemlessly injects matching out-of-tree modules (Wi-Fi/Audio) for the newly flashed custom kernel.
           EOF
           
           cat << 'EOF' > $GITHUB_WORKSPACE/MagiskModule/customize.sh
@@ -152,7 +153,6 @@ jobs:
           elif [ -d "/vendor/lib/modules" ]; then
               MODULES_DIR="/vendor/lib/modules"
           fi
-          
           if [ -n "$MODULES_DIR" ]; then
               ui_print "- Target modules directory: $MODULES_DIR"
               for ko in $(find $MODPATH/custom_ko -type f -name "*.ko"); do
@@ -179,23 +179,62 @@ jobs:
 
       - name: Package Kernel into AnyKernel3 ZIP
         run: |
-          RAW_IMAGE="$GITHUB_WORKSPACE/out/msm-5.4-lahaina-qgki-consolidate/dist/Image"
-          if [ ! -f "$RAW_IMAGE" ]; then
-            echo "ERROR: Kernel image not found at $RAW_IMAGE !"
+          RAW_IMAGE=$(find $GITHUB_WORKSPACE/out -type f -name "Image" | head -n 1)
+          if [ -z "$RAW_IMAGE" ]; then
+            echo "ERROR: Kernel image not found!"
             exit 1
           fi
-
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git $GITHUB_WORKSPACE/AnyKernel3
           cd $GITHUB_WORKSPACE/AnyKernel3
-
           rm -rf modules patch ramdisk README.md
-          cp $GITHUB_WORKSPACE/anykernel/anykernel.sh ./anykernel.sh
+          cp $GITHUB_WORKSPACE/anykernel/anykernel.sh ./anykernel.sh || true
           cp "$RAW_IMAGE" ./Image
-
           zip -r9 "$GITHUB_WORKSPACE/FinalOutput/OP9Pro-Custom-Kernel-AK3.zip" . -x '.git/*' -x '*.zip'
 
-      - name: Upload Kernel Artifacts
+      - name: Patch Stock vendor_boot.img with New Modules
+        run: |
+          echo "==> Preparing vendor_boot patcher..."
+          mkdir -p $GITHUB_WORKSPACE/vendor_boot_patch
+          cd $GITHUB_WORKSPACE/vendor_boot_patch
+          
+          unzip $GITHUB_WORKSPACE/stock_vendor_boot.zip
+          STOCK_IMG=$(find . -name "*.img" | head -n 1)
+          if [ -z "$STOCK_IMG" ]; then
+            echo "ERROR: No .img found in stock_vendor_boot.zip!"
+            exit 1
+          fi
+          mv "$STOCK_IMG" vendor_boot.img
+          
+          chmod +x $GITHUB_WORKSPACE/AnyKernel3/tools/magiskboot
+          $GITHUB_WORKSPACE/AnyKernel3/tools/magiskboot unpack vendor_boot.img
+          
+          if [ ! -f "ramdisk.cpio" ]; then
+            echo "ERROR: magiskboot failed to extract ramdisk.cpio!"
+            exit 1
+          fi
+          
+          mkdir ramdisk_ext
+          cd ramdisk_ext
+          cpio -i < ../ramdisk.cpio
+          
+          echo "==> Replacing stock .ko modules with newly built ones..."
+          for ko in $(find $GITHUB_WORKSPACE/out -name "*.ko" -type f); do
+              filename=$(basename $ko)
+              target=$(find . -type f -name "$filename" | head -n 1)
+              if [ -n "$target" ]; then
+                  cp $ko $target
+                  echo "  [Updated] $filename -> $target"
+              fi
+          done
+          
+          find . | cpio -H newc -o > ../ramdisk.cpio
+          cd ..
+          
+          $GITHUB_WORKSPACE/AnyKernel3/tools/magiskboot repack vendor_boot.img vendor_boot_custom.img
+          cp vendor_boot_custom.img $GITHUB_WORKSPACE/FinalOutput/
+
+      - name: Upload Final Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OnePlus-9Pro-Kernel-And-Modules
+          name: OnePlus-9Pro-Complete-Package
           path: FinalOutput/*
