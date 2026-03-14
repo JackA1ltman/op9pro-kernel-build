@@ -203,7 +203,11 @@ jobs:
             echo "ERROR: No .img found in stock_vendor_boot.zip!"
             exit 1
           fi
-          mv "$STOCK_IMG" vendor_boot.img
+          
+          # التحقق لتفادي خطأ تطابق اسم الملف والمسار
+          if [ "$STOCK_IMG" != "./vendor_boot.img" ] && [ "$STOCK_IMG" != "vendor_boot.img" ]; then
+            mv "$STOCK_IMG" vendor_boot.img
+          fi
           
           chmod +x $GITHUB_WORKSPACE/AnyKernel3/tools/magiskboot
           $GITHUB_WORKSPACE/AnyKernel3/tools/magiskboot unpack vendor_boot.img
