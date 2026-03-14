@@ -204,13 +204,16 @@ jobs:
             exit 1
           fi
           
-          # التحقق لتفادي خطأ تطابق اسم الملف والمسار
           if [ "$STOCK_IMG" != "./vendor_boot.img" ] && [ "$STOCK_IMG" != "vendor_boot.img" ]; then
             mv "$STOCK_IMG" vendor_boot.img
           fi
           
-          chmod +x $GITHUB_WORKSPACE/AnyKernel3/tools/magiskboot
-          $GITHUB_WORKSPACE/AnyKernel3/tools/magiskboot unpack vendor_boot.img
+          echo "==> Downloading Linux-native magiskboot..."
+          wget -qO magiskboot https://github.com/sviderskiy/magiskboot-binaries/raw/main/linux-x86_64/magiskboot || wget -qO magiskboot https://raw.githubusercontent.com/xiaolu/mkbootimg_tools/master/magiskboot
+          chmod +x magiskboot
+          
+          echo "==> Unpacking vendor_boot.img..."
+          ./magiskboot unpack vendor_boot.img
           
           if [ ! -f "ramdisk.cpio" ]; then
             echo "ERROR: magiskboot failed to extract ramdisk.cpio!"
@@ -234,8 +237,10 @@ jobs:
           find . | cpio -H newc -o > ../ramdisk.cpio
           cd ..
           
-          $GITHUB_WORKSPACE/AnyKernel3/tools/magiskboot repack vendor_boot.img vendor_boot_custom.img
+          echo "==> Repacking vendor_boot_custom.img..."
+          ./magiskboot repack vendor_boot.img vendor_boot_custom.img
           cp vendor_boot_custom.img $GITHUB_WORKSPACE/FinalOutput/
+
 
       - name: Upload Final Artifacts
         uses: actions/upload-artifact@v4
