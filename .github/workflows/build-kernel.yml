@@ -208,8 +208,10 @@ jobs:
             mv "$STOCK_IMG" vendor_boot.img
           fi
           
-          echo "==> Downloading Linux-native magiskboot..."
-          wget -qO magiskboot https://github.com/sviderskiy/magiskboot-binaries/raw/main/linux-x86_64/magiskboot || wget -qO magiskboot https://raw.githubusercontent.com/xiaolu/mkbootimg_tools/master/magiskboot
+          echo "==> Fetching official magiskboot from Magisk APK..."
+          wget -qO magisk.apk https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
+          unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
+          mv libmagiskboot.so magiskboot
           chmod +x magiskboot
           
           echo "==> Unpacking vendor_boot.img..."
@@ -240,6 +242,7 @@ jobs:
           echo "==> Repacking vendor_boot_custom.img..."
           ./magiskboot repack vendor_boot.img vendor_boot_custom.img
           cp vendor_boot_custom.img $GITHUB_WORKSPACE/FinalOutput/
+
 
 
       - name: Upload Final Artifacts
