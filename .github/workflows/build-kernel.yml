@@ -99,6 +99,11 @@ jobs:
           . ${ROOT_DIR}/kernel/msm-5.4/build.config.msm.lahaina
           function fix_localversion() {
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --set-str LOCALVERSION "-qgki-gd2a1055adeb0"
+              
+              # تطبيق التوصيات الهندسية لتعطيل تعارض الجدولة المسبب للـ Bootloop
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable CFS_BANDWIDTH
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable DRM_MSM_IRIS
+              
               (cd ${KERNEL_DIR} && make "${TOOL_ARGS[@]}" O=${OUT_DIR} ${MAKE_ARGS} olddefconfig)
           }
           append_cmd POST_DEFCONFIG_CMDS 'fix_localversion'
@@ -127,7 +132,7 @@ jobs:
           sed -i 's/echo "+"/echo ""/g' $GITHUB_WORKSPACE/kernel/msm-5.4/scripts/setlocalversion
 
           bash device/qcom/kernelscripts/build.sh LLVM=1 LLVM_IAS=1
-
+          
       - name: Prepare FinalOutput Directory
         run: mkdir -p $GITHUB_WORKSPACE/FinalOutput
 
