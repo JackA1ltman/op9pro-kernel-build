@@ -13,7 +13,7 @@ env:
   DEVICE_TREE_REPO: smualemi/android_kernel_modules_and_devicetree_oneplus_sm8350
   DEVICE_TREE_BRANCH: oneplus/sm8350_u_14.0.0_oneplus9
   # Flag configuration to fix VLA and DTS errors
-  KCFLAGS: "-Wno-vla-extension -Wno-vla -Wno-error"
+  KCFLAGS: "-Wno-vla-extension -Wno-vla -Wno-error -Wno-ignored-optimization-argument"
   DTC_FLAGS: "-Wno-graph_port"
 
 jobs:
@@ -159,7 +159,8 @@ jobs:
 
           # Robust removal of -Werror including techpack and sub-makefiles
           find $GITHUB_WORKSPACE/kernel/msm-5.4/ -type f \( -name "Makefile*" -o -name "Kbuild*" -o -name "*.mk" \) -exec sed -i 's/-Werror[a-zA-Z0-9_=-]*//g' {} +
-          
+          # حذف متغيرات GCC غير المدعومة في Clang 14 من كافة الملفات
+          find $GITHUB_WORKSPACE/kernel/msm-5.4/ -type f \( -name "Makefile*" -o -name "Kbuild*" -o -name "*.mk" \) -exec sed -i 's/-fmerge-constants//g' {} +
           # Run the build script with DTS flag suppression
           bash device/qcom/kernelscripts/build.sh LLVM=1 LLVM_IAS=1 DTC_FLAGS="${DTC_FLAGS}"
           
