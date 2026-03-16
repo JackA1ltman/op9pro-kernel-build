@@ -119,6 +119,17 @@ jobs:
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable CFS_BANDWIDTH
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable DRM_MSM_IRIS
               
+              # دمج وحدات الطاقة والمسارات داخل النواة
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable PINCTRL
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable PINCTRL_QCOM
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable REGULATOR
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable REGULATOR_QCOM_RPMH
+              
+              # تعطيل التحقق من توافق الرموز والتوقيعات لقبول وحدات النظام الأصلية
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODVERSIONS
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODULE_SIG
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODULE_SIG_ALL
+              
               (cd ${KERNEL_DIR} && make "${TOOL_ARGS[@]}" O=${OUT_DIR} ${MAKE_ARGS} olddefconfig)
           }
           append_cmd POST_DEFCONFIG_CMDS 'fix_localversion'
