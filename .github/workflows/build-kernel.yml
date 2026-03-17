@@ -12,8 +12,8 @@ env:
   KERNEL_BRANCH: oneplus/sm8350_u_14.0.0_oneplus9
   DEVICE_TREE_REPO: smualemi/android_kernel_modules_and_devicetree_oneplus_sm8350
   DEVICE_TREE_BRANCH: oneplus/sm8350_u_14.0.0_oneplus9
-  # Flag configuration to fix VLA and DTS errors
-  KCFLAGS: "-Wno-vla-extension -Wno-vla -Wno-error -Wno-ignored-optimization-argument"
+  # Flag configuration to fix VLA, DTS, and GCC-specific unknown options
+  KCFLAGS: "-Wno-vla-extension -Wno-vla -Wno-error -Wno-ignored-optimization-argument -Wno-unknown-warning-option"
   DTC_FLAGS: "-Wno-graph_port"
 
 jobs:
