@@ -55,14 +55,21 @@ jobs:
 
       - name: Clone Toolchains
         run: |
-          echo "==> Fetching Official AOSP Clang 14 (r450784d)..."
+          echo "==> Fetching AOSP Clang 11 (r383902b1) — matches stock OnePlus kernel..."
           mkdir -p $GITHUB_WORKSPACE/toolchain/clang
           
-          if ! wget -qO clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android13-release/clang-r450784d.tar.gz"; then
-            echo "==> AOSP Gitiles failed, falling back to reliable GitHub mirror..."
-            git clone --depth=1 https://github.com/droidian/android-platform-prebuilts-clang-host-linux-x86-33.git /tmp/clang-mirror
-            mv /tmp/clang-mirror/clang-r450784d/* $GITHUB_WORKSPACE/toolchain/clang/
-            rm -rf /tmp/clang-mirror
+          # Stock kernel /proc/version: Android (6877366 based on r383902b1) clang version 11.0.2
+          if ! wget -qO clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902b1.tar.gz"; then
+            echo "==> AOSP Gitiles failed, trying alternative branch..."
+            if ! wget -qO clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2021/clang-r383902b1.tar.gz"; then
+              echo "==> All AOSP mirrors failed, cloning from AOSP git..."
+              git clone --depth=1 -b android-11.0.0_r1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 /tmp/clang-repo
+              cp -r /tmp/clang-repo/clang-r383902b1/* $GITHUB_WORKSPACE/toolchain/clang/
+              rm -rf /tmp/clang-repo
+            else
+              tar -xf clang.tar.gz -C $GITHUB_WORKSPACE/toolchain/clang
+              rm -f clang.tar.gz
+            fi
           else
             tar -xf clang.tar.gz -C $GITHUB_WORKSPACE/toolchain/clang
             rm -f clang.tar.gz
@@ -168,7 +175,7 @@ jobs:
 
           # Remove -Werror to allow build to pass with warnings (not errors)
           find $GITHUB_WORKSPACE/kernel/msm-5.4/ -type f \( -name "Makefile*" -o -name "Kbuild*" -o -name "*.mk" \) -exec sed -i 's/-Werror[a-zA-Z0-9_=-]*//g' {} +
-          # Remove GCC-only flag unsupported by Clang 14
+          # Remove GCC-only flag unsupported by Clang
           find $GITHUB_WORKSPACE/kernel/msm-5.4/ -type f \( -name "Makefile*" -o -name "Kbuild*" -o -name "*.mk" \) -exec sed -i 's/-fmerge-constants//g' {} +
 
           # Run the build script
