@@ -59,21 +59,30 @@ jobs:
           mkdir -p $GITHUB_WORKSPACE/toolchain/clang
           
           # Stock kernel /proc/version: Android (6877366 based on r383902b1) clang version 11.0.2
-          if ! wget -qO clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902b1.tar.gz"; then
-            echo "==> AOSP Gitiles failed, trying alternative branch..."
-            if ! wget -qO clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2021/clang-r383902b1.tar.gz"; then
-              echo "==> All AOSP mirrors failed, cloning from AOSP git..."
-              git clone --depth=1 -b android-11.0.0_r1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 /tmp/clang-repo
-              cp -r /tmp/clang-repo/clang-r383902b1/* $GITHUB_WORKSPACE/toolchain/clang/
-              rm -rf /tmp/clang-repo
-            else
-              tar -xf clang.tar.gz -C $GITHUB_WORKSPACE/toolchain/clang
-              rm -f clang.tar.gz
-            fi
-          else
-            tar -xf clang.tar.gz -C $GITHUB_WORKSPACE/toolchain/clang
-            rm -f clang.tar.gz
+          # Clone the full AOSP clang prebuilts (android11-release), then extract r383902 version
+          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android11-release --depth=1 /tmp/clang-full
+          
+          # Find the correct clang-r383902* directory (handles naming: r383902, r383902b, r383902b1)
+          CLANG_DIR=$(find /tmp/clang-full -maxdepth 1 -type d -name "clang-r383902*" | head -n 1)
+          if [ -z "$CLANG_DIR" ]; then
+            echo "WARNING: clang-r383902* not found! Available clang versions:"
+            ls -d /tmp/clang-full/clang-*/ 2>/dev/null || echo "No clang-* dirs found"
+            # Fallback: use the latest available clang in the repo
+            CLANG_DIR=$(ls -d /tmp/clang-full/clang-*/ 2>/dev/null | sort -V | tail -n1)
           fi
+          
+          if [ -z "$CLANG_DIR" ]; then
+            echo "ERROR: No AOSP Clang found!"
+            exit 1
+          fi
+          
+          echo "==> Using clang from: $CLANG_DIR"
+          cp -r "$CLANG_DIR"/* $GITHUB_WORKSPACE/toolchain/clang/
+          rm -rf /tmp/clang-full
+          
+          # Verify clang works
+          echo "==> Clang version:"
+          $GITHUB_WORKSPACE/toolchain/clang/bin/clang --version
           
           echo "==> Cloning GCC & Build Tools..."
           git clone --depth=1 -b lineage-19.1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git $GITHUB_WORKSPACE/toolchain/gcc-aarch64
