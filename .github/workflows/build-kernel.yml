@@ -137,22 +137,26 @@ jobs:
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --set-str LOCALVERSION "-qgki-gd2a1055adeb0"
               
               # ===================================================================
-              # CRITICAL: Keep ALL stock config values intact!
-              # DO NOT disable MODVERSIONS, MODULE_SIG, DRM_MSM_IRIS, CFS_BANDWIDTH
-              # Disabling these breaks HAL compatibility and causes bootloop.
+              # CRITICAL FIX: Disable MODVERSIONS to prevent CRC mismatch bootloop
+              # 
+              # The QGKI build system only produces out-of-tree modules (audio,
+              # camera, tuner). The critical in-tree GKI modules in vendor_boot
+              # (cmd-db.ko, smem.ko, qcom_rpmh.ko, etc.) are NOT rebuilt.
+              # With MODVERSIONS enabled, these stock modules fail CRC check
+              # against the new kernel → bootloop.
+              # 
+              # Disabling MODVERSIONS lets the kernel load any module without
+              # checking CRC signatures.
               # ===================================================================
-              
-              # Ensure MODVERSIONS is ON (matches stock — required for module CRC)
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable MODVERSIONS
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODVERSIONS
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODULE_SIG
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODULE_SIG_ALL
               
               # Ensure DRM_MSM_IRIS is ON (required for Pixelworks Iris display chip)
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable DRM_MSM_IRIS
               
               # Ensure CFS_BANDWIDTH is ON (stock scheduler feature)
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable CFS_BANDWIDTH
-              
-              # Keep MODULE_SIG as stock defconfig defines it
-              # Do NOT force-disable MODULE_SIG or MODULE_SIG_ALL
               
               (cd ${KERNEL_DIR} && make "${TOOL_ARGS[@]}" O=${OUT_DIR} ${MAKE_ARGS} olddefconfig)
           }
@@ -328,7 +332,7 @@ jobs:
               stock_name=$(basename $stock_ko)
               built=$(find $GITHUB_WORKSPACE/out -name "$stock_name" -type f | head -n 1)
               if [ -z "$built" ]; then
-                  echo "  [WARNING] $stock_name — stock module kept, may have CRC mismatch!"
+                  echo "  [INFO] $stock_name — stock module kept (OK: MODVERSIONS disabled, no CRC check)"
               fi
           done
           
