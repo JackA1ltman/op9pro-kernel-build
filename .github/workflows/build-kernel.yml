@@ -139,78 +139,43 @@ jobs:
 
               # ===================================================================
               # CRITICAL FIX: Disable MODVERSIONS to prevent CRC mismatch bootloop
-              # 
-              # The QGKI build system only produces out-of-tree modules (audio,
-              # camera, tuner). The critical in-tree GKI modules in vendor_boot
-              # (cmd-db.ko, smem.ko, qcom_rpmh.ko, etc.) are NOT rebuilt.
-              # With MODVERSIONS enabled, these stock modules fail CRC check
-              # against the new kernel → bootloop.
-              # 
-              # Disabling MODVERSIONS lets the kernel load any module without
-              # checking CRC signatures.
               # ===================================================================
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODVERSIONS
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODULE_SIG
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODULE_SIG_ALL
 
               # ===================================================================
-              # CRITICAL FIX: Enable DRM/GPU/Display drivers
+              # FIX: Ensure DRM/Display subsystem is enabled
               #
-              # Without these, the display will not initialize:
-              # - DRMMaster::Init: drmOpen fails repeatedly
-              # - GPU firmware (a660_sqe.fw, a660_gmu.bin) cannot load
-              # - SurfaceFlinger/Display HAL crashes with SIGSEGV at NULL
-              # - Device stuck at OnePlus logo
+              # Boot log showed:
+              #   DRMMaster::Init: drmOpen failed with error -1 (8+ retries)
+              #   Direct firmware load for a660_sqe.fw/a660_gmu.bin failed
+              #   vendor.qti.hard crashed SIGSEGV at NULL (40+ times)
+              #
+              # DRM_MSM_IRIS was already enabled but the base DRM_MSM was not
+              # explicitly forced. Ensure it stays as module (=m) so the
+              # display driver loads properly.
               # ===================================================================
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable DRM
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --module DRM_MSM
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable DRM_MSM_IRIS
-
-              # ===================================================================
-              # CRITICAL FIX: Enable Adreno GPU (KGSL) driver
-              #
-              # Required for GPU hardware acceleration on SM8350 (Adreno 660)
-              # Without this, GPU firmware loading fails and display doesn't work
-              # ===================================================================
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --module QCOM_KGSL
-
-              # ===================================================================
-              # CRITICAL FIX: Enable FastRPC/ADSP communication driver
-              #
-              # Without this, /dev/adsprpc-smd device node is not created:
-              # - sscrpcd: apps_dev_init failed for domain 2 (No such device)
-              # - Audio, sensors, camera all fail to communicate with DSP
-              # - 200+ repeated errors in boot log
-              # ===================================================================
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --module MSM_FASTRPC
-
-              # ===================================================================
-              # Enable Qualcomm subsystem drivers required for SM8350
-              # These are needed for proper hardware initialization
-              # ===================================================================
-              # Remoteproc/PIL - loads firmware for ADSP, CDSP, MPSS subsystems
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable QCOM_Q6V5_PAS
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable QCOM_PIL_INFO
-
-              # RPM/RPMH - resource power manager (critical for power management)
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable QCOM_RPMH
-
-              # SMEM - shared memory between processors
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable QCOM_SMEM
-
-              # GLINK/QMI - inter-processor communication
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable RPMSG_QCOM_GLINK_SMEM
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable RPMSG_QCOM_GLINK_RPM
-
-              # SMP2P and SMSM - state sharing between processors
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable QCOM_SMP2P
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable QCOM_SMSM
-
-              # CMD-DB - command database for RPMh
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable QCOM_COMMAND_DB
 
               # Ensure CFS_BANDWIDTH is ON (stock scheduler feature)
               ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable CFS_BANDWIDTH
+
+              # ===================================================================
+              # DIAGNOSTIC: Log the current state of critical configs after
+              # defconfig so we can verify what's set and what's missing.
+              # This helps debug boot issues without changing anything risky.
+              # ===================================================================
+              echo "=== CRITICAL CONFIG CHECK ==="
+              echo "--- Display/GPU ---"
+              grep -E "CONFIG_DRM=|CONFIG_DRM_MSM=|CONFIG_DRM_MSM_IRIS=|CONFIG_QCOM_KGSL=" ${OUT_DIR}/.config || echo "(not found)"
+              echo "--- FastRPC/ADSP ---"
+              grep -E "CONFIG_MSM_FASTRPC=|CONFIG_FASTRPC=" ${OUT_DIR}/.config || echo "(not found)"
+              echo "--- Subsystem loaders ---"
+              grep -E "CONFIG_QCOM_Q6V5|CONFIG_QCOM_PIL|CONFIG_QCOM_RPMH=|CONFIG_QCOM_SMEM=" ${OUT_DIR}/.config || echo "(not found)"
+              echo "--- Module versioning ---"
+              grep -E "CONFIG_MODVERSIONS=|CONFIG_MODULE_SIG=" ${OUT_DIR}/.config || echo "(not found)"
+              echo "=== END CONFIG CHECK ==="
 
               (cd ${KERNEL_DIR} && make "${TOOL_ARGS[@]}" O=${OUT_DIR} ${MAKE_ARGS} olddefconfig)
           }
