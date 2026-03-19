@@ -1,4 +1,4 @@
-name: Build OnePlus 9 Pro Kernel & Modules
+name: Build OnePlus 9 Pro Kernel (1:1 Stock)
 
 on:
   push:
@@ -55,19 +55,21 @@ jobs:
 
       - name: Clone Toolchains
         run: |
-          echo "==> Fetching AOSP Clang 11 (r383902b1) — matches stock OnePlus kernel..."
+          # ================================================================
+          # CRITICAL: Use clang-r416183b to match stock OnePlus kernel
+          # Official source: build.config.common specifies this exact version
+          # Using a different clang produces different CRCs → MODVERSIONS
+          # mismatch → bootloop
+          # ================================================================
+          echo "==> Fetching AOSP Clang (r416183b) — matches official OnePlus build..."
           mkdir -p $GITHUB_WORKSPACE/toolchain/clang
 
-          # Stock kernel /proc/version: Android (6877366 based on r383902b1) clang version 11.0.2
-          # Clone the full AOSP clang prebuilts (android11-release), then extract r383902 version
-          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android11-release --depth=1 /tmp/clang-full
+          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android12-release --depth=1 /tmp/clang-full
 
-          # Find the correct clang-r383902* directory (handles naming: r383902, r383902b, r383902b1)
-          CLANG_DIR=$(find /tmp/clang-full -maxdepth 1 -type d -name "clang-r383902*" | head -n 1)
+          CLANG_DIR=$(find /tmp/clang-full -maxdepth 1 -type d -name "clang-r416183b*" | head -n 1)
           if [ -z "$CLANG_DIR" ]; then
-            echo "WARNING: clang-r383902* not found! Available clang versions:"
-            ls -d /tmp/clang-full/clang-*/ 2>/dev/null || echo "No clang-* dirs found"
-            # Fallback: use the latest available clang in the repo
+            echo "WARNING: clang-r416183b not found! Available:"
+            ls -d /tmp/clang-full/clang-*/ 2>/dev/null || echo "No clang dirs found"
             CLANG_DIR=$(ls -d /tmp/clang-full/clang-*/ 2>/dev/null | sort -V | tail -n1)
           fi
 
@@ -80,7 +82,6 @@ jobs:
           cp -r "$CLANG_DIR"/* $GITHUB_WORKSPACE/toolchain/clang/
           rm -rf /tmp/clang-full
 
-          # Verify clang works
           echo "==> Clang version:"
           $GITHUB_WORKSPACE/toolchain/clang/bin/clang --version
 
@@ -109,19 +110,22 @@ jobs:
           sudo mkswap /swapfile2
           sudo swapon /swapfile2
 
-      - name: Generate Proxy Config & Build Kernel with Modules
+      - name: Build Kernel
         run: |
           cd $GITHUB_WORKSPACE
           export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$GITHUB_WORKSPACE/toolchain/gcc-aarch64/bin:$GITHUB_WORKSPACE/toolchain/gcc-arm32/bin:$PATH"
 
-          # Use consolidate variant instead of debug
+          # Use consolidate variant (matches stock)
           sed -i 's/VARIANTS=(qgki-debug/VARIANTS=(qgki-consolidate/' $GITHUB_WORKSPACE/kernel/msm-5.4/build.config.msm.lahaina
           sed -i 's/qgki-debug | qgki-consolidate/qgki-consolidate | qgki-consolidate/' $GITHUB_WORKSPACE/kernel/msm-5.4/build.config.msm.lahaina
 
-          # Synchronize LOCALVERSION across ALL configs to match stock exactly
-          CONFIGS_DIR="$GITHUB_WORKSPACE/kernel/msm-5.4/arch/arm64/configs"
-          find "$CONFIGS_DIR" -type f \( -name "*.config" -o -name "*defconfig" \) -exec sed -i 's/CONFIG_LOCALVERSION="[^"]*"/CONFIG_LOCALVERSION="-qgki-gd2a1055adeb0"/g' {} +
-
+          # ================================================================
+          # Clean build config: no hacks, no overrides
+          # Let the stock defconfig + fragments handle everything naturally.
+          # lahaina_consolidate.config sets LOCALVERSION="-qgki-consolidate"
+          # android-base.config sets MODVERSIONS=y
+          # We do NOT override these — stock is stock.
+          # ================================================================
           cat << 'EOF' > build.config.custom
           function append_cmd() {
               if [ ! -z "${!1}" ]; then
@@ -133,56 +137,21 @@ jobs:
           export -f append_cmd
           . ${ROOT_DIR}/kernel/msm-5.4/build.config.msm.lahaina
 
-          function fix_localversion() {
-              # Force strictly matching LOCALVERSION to match stock kernel string
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --set-str LOCALVERSION "-qgki-gd2a1055adeb0"
-
-              # ===================================================================
-              # CRITICAL FIX: Enable MODVERSIONS to match stock vendor modules
-              # Stock modules are compiled WITH modversions — the kernel MUST
-              # also have MODVERSIONS enabled or version magic will mismatch
-              # and ALL modules will fail to load (Exec format error).
-              # ===================================================================
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable MODVERSIONS
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODULE_SIG
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODULE_SIG_ALL
-
-              # ===================================================================
-              # FIX: Ensure DRM/Display subsystem is enabled
-              #
-              # Boot log showed:
-              #   DRMMaster::Init: drmOpen failed with error -1 (8+ retries)
-              #   Direct firmware load for a660_sqe.fw/a660_gmu.bin failed
-              #   vendor.qti.hard crashed SIGSEGV at NULL (40+ times)
-              #
-              # DRM_MSM_IRIS was already enabled but the base DRM_MSM was not
-              # explicitly forced. Ensure it stays as module (=m) so the
-              # display driver loads properly.
-              # ===================================================================
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable DRM_MSM_IRIS
-
-              # Ensure CFS_BANDWIDTH is ON (stock scheduler feature)
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable CFS_BANDWIDTH
-
-              # ===================================================================
-              # DIAGNOSTIC: Log the current state of critical configs after
-              # defconfig so we can verify what's set and what's missing.
-              # This helps debug boot issues without changing anything risky.
-              # ===================================================================
-              echo "=== CRITICAL CONFIG CHECK ==="
-              echo "--- Display/GPU ---"
-              grep -E "CONFIG_DRM=|CONFIG_DRM_MSM=|CONFIG_DRM_MSM_IRIS=|CONFIG_QCOM_KGSL=" ${OUT_DIR}/.config || echo "(not found)"
-              echo "--- FastRPC/ADSP ---"
-              grep -E "CONFIG_MSM_FASTRPC=|CONFIG_FASTRPC=" ${OUT_DIR}/.config || echo "(not found)"
-              echo "--- Subsystem loaders ---"
-              grep -E "CONFIG_QCOM_Q6V5|CONFIG_QCOM_PIL|CONFIG_QCOM_RPMH=|CONFIG_QCOM_SMEM=" ${OUT_DIR}/.config || echo "(not found)"
+          function post_defconfig_checks() {
+              echo "=== POST-DEFCONFIG CONFIG CHECK ==="
+              echo "--- LOCALVERSION ---"
+              grep "CONFIG_LOCALVERSION=" ${OUT_DIR}/.config || echo "(not found)"
               echo "--- Module versioning ---"
               grep -E "CONFIG_MODVERSIONS=|CONFIG_MODULE_SIG=" ${OUT_DIR}/.config || echo "(not found)"
+              echo "--- Display/GPU ---"
+              grep -E "CONFIG_DRM=|CONFIG_DRM_MSM=" ${OUT_DIR}/.config || echo "(not found)"
+              echo "--- Subsystem loaders ---"
+              grep -E "CONFIG_QCOM_Q6V5|CONFIG_QCOM_RPMH=|CONFIG_QCOM_SMEM=" ${OUT_DIR}/.config || echo "(not found)"
               echo "=== END CONFIG CHECK ==="
 
               (cd ${KERNEL_DIR} && make "${TOOL_ARGS[@]}" O=${OUT_DIR} ${MAKE_ARGS} olddefconfig)
           }
-          append_cmd POST_DEFCONFIG_CMDS 'fix_localversion'
+          append_cmd POST_DEFCONFIG_CMDS 'post_defconfig_checks'
           EOF
 
           mkdir -p $GITHUB_WORKSPACE/device/qcom/build
@@ -208,165 +177,33 @@ jobs:
           echo "" > $GITHUB_WORKSPACE/kernel/msm-5.4/.scmversion
           sed -i 's/echo "+"/echo ""/g' $GITHUB_WORKSPACE/kernel/msm-5.4/scripts/setlocalversion
 
-          # Remove -Werror to allow build to pass with warnings (not errors)
+          # Remove -Werror to allow build to pass with warnings (stock has many)
           find $GITHUB_WORKSPACE/kernel/msm-5.4/ -type f \( -name "Makefile*" -o -name "Kbuild*" -o -name "*.mk" \) -exec sed -i 's/-Werror[a-zA-Z0-9_=-]*//g' {} +
           # Remove GCC-only flag unsupported by Clang
           find $GITHUB_WORKSPACE/kernel/msm-5.4/ -type f \( -name "Makefile*" -o -name "Kbuild*" -o -name "*.mk" \) -exec sed -i 's/-fmerge-constants//g' {} +
 
-          # Run the build script
+          # Run the build
           bash device/qcom/kernelscripts/build.sh LLVM=1 LLVM_IAS=1 DTC_FLAGS="${DTC_FLAGS}"
-
-      - name: Prepare FinalOutput Directory
-        run: mkdir -p $GITHUB_WORKSPACE/FinalOutput
-
-      - name: Collect Built Modules & Create Magisk Module ZIP
-        run: |
-          mkdir -p $GITHUB_WORKSPACE/MagiskModule/custom_ko
-          find $GITHUB_WORKSPACE/out -name "*.ko" -type f -exec cp {} $GITHUB_WORKSPACE/MagiskModule/custom_ko/ \;
-
-          # Log how many modules were built
-          BUILT_COUNT=$(find $GITHUB_WORKSPACE/MagiskModule/custom_ko -name "*.ko" | wc -l)
-          echo "==> Built $BUILT_COUNT kernel modules (.ko files)"
-
-          cat << 'EOF' > $GITHUB_WORKSPACE/MagiskModule/module.prop
-          id=op9pro_custom_kernel_modules
-          name=OnePlus 9 Pro Custom Kernel Modules
-          version=v1.0
-          versionCode=1
-          author=CustomBuild
-          description=Systemlessly injects out-of-tree modules for the custom kernel.
-          EOF
-
-          cat << 'EOF' > $GITHUB_WORKSPACE/MagiskModule/customize.sh
-          ui_print "- Installing Custom Kernel Modules..."
-          MODULES_DIR="/vendor/lib/modules"
-          if [ ! -d "$MODULES_DIR" ]; then
-              MODULES_DIR="/vendor_dlkm/lib/modules"
-          fi
-          ui_print "- Target directory: $MODULES_DIR"
-
-          REPLACED=0
-          ADDED=0
-          for ko in $(find $MODPATH/custom_ko -type f -name "*.ko"); do
-              filename=$(basename $ko)
-              sys_path=$(find $MODULES_DIR -type f -name "$filename" | head -n 1)
-              if [ -n "$sys_path" ]; then
-                  rel_path=${sys_path#$MODULES_DIR/}
-                  mkdir -p $(dirname $MODPATH/system$MODULES_DIR/$rel_path)
-                  cp $ko $MODPATH/system$MODULES_DIR/$rel_path
-                  ui_print "  Overlaid: $filename"
-                  REPLACED=$((REPLACED + 1))
-              else
-                  cp $ko $MODPATH/system$MODULES_DIR/
-                  ui_print "  Added: $filename"
-                  ADDED=$((ADDED + 1))
-              fi
-          done
-          ui_print "- Done: $REPLACED replaced, $ADDED added"
-          rm -rf $MODPATH/custom_ko
-          EOF
-
-          cd $GITHUB_WORKSPACE/MagiskModule
-          zip -r9 $GITHUB_WORKSPACE/FinalOutput/OP9Pro-Kernel-Modules.zip .
 
       - name: Package Kernel into AnyKernel3 ZIP
         run: |
+          mkdir -p $GITHUB_WORKSPACE/FinalOutput
+
           RAW_IMAGE=$(find $GITHUB_WORKSPACE/out -type f -name "Image" | head -n 1)
           if [ -z "$RAW_IMAGE" ]; then
             echo "ERROR: Kernel image not found!"
             exit 1
           fi
+
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git $GITHUB_WORKSPACE/AnyKernel3
           cd $GITHUB_WORKSPACE/AnyKernel3
           rm -rf modules patch ramdisk README.md
           cp $GITHUB_WORKSPACE/anykernel/anykernel.sh ./anykernel.sh || true
           cp "$RAW_IMAGE" ./Image
-          zip -r9 "$GITHUB_WORKSPACE/FinalOutput/OP9Pro-Custom-Kernel-AK3.zip" . -x '.git/*' -x '*.zip'
+          zip -r9 "$GITHUB_WORKSPACE/FinalOutput/OP9Pro-Stock-Kernel-AK3.zip" . -x '.git/*' -x '*.zip'
 
-      - name: Patch Stock vendor_boot.img with New Modules
-        run: |
-          echo "==> Preparing vendor_boot patcher..."
-          mkdir -p $GITHUB_WORKSPACE/vendor_boot_patch
-          cd $GITHUB_WORKSPACE/vendor_boot_patch
-
-          # stock_vendor_boot.zip must be in the repo root (uploaded or checked in)
-          if [ ! -f "$GITHUB_WORKSPACE/stock_vendor_boot.zip" ]; then
-             echo "============================================================="
-             echo "ERROR: stock_vendor_boot.zip not found!"
-             echo "This file is REQUIRED to build a working vendor_boot_custom.img."
-             echo "Get it by running on your device:"
-             echo "  adb pull /dev/block/by-name/vendor_boot stock_vendor_boot.img"
-             echo "  zip stock_vendor_boot.zip stock_vendor_boot.img"
-             echo "Then add it to your repository root."
-             echo "============================================================="
-             exit 1
-          fi
-
-          unzip $GITHUB_WORKSPACE/stock_vendor_boot.zip
-          STOCK_IMG=$(find . -name "*.img" | head -n 1)
-          if [ -z "$STOCK_IMG" ]; then
-            echo "ERROR: No .img found in stock_vendor_boot.zip!"
-            exit 1
-          fi
-
-          if [ "$STOCK_IMG" != "./vendor_boot.img" ] && [ "$STOCK_IMG" != "vendor_boot.img" ]; then
-            mv "$STOCK_IMG" vendor_boot.img
-          fi
-
-          echo "==> Fetching official magiskboot from Magisk APK..."
-          wget -qO magisk.apk https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
-          unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
-          mv libmagiskboot.so magiskboot
-          chmod +x magiskboot
-
-          echo "==> Unpacking vendor_boot.img..."
-          ./magiskboot unpack vendor_boot.img
-
-          if [ ! -f "ramdisk.cpio" ]; then
-            echo "ERROR: magiskboot failed to extract ramdisk.cpio!"
-            exit 1
-          fi
-
-          mkdir ramdisk_ext
-          cd ramdisk_ext
-          cpio -i < ../ramdisk.cpio
-
-          echo "==> Replacing stock .ko modules with newly built ones..."
-          REPLACED=0
-          NOT_FOUND=0
-          for ko in $(find $GITHUB_WORKSPACE/out -name "*.ko" -type f); do
-              filename=$(basename $ko)
-              target=$(find . -type f -name "$filename" | head -n 1)
-              if [ -n "$target" ]; then
-                  cp $ko $target
-                  echo "  [Updated] $filename -> $target"
-                  REPLACED=$((REPLACED + 1))
-              else
-                  echo "  [Skipped] $filename (not found in stock vendor_boot)"
-                  NOT_FOUND=$((NOT_FOUND + 1))
-              fi
-          done
-          echo "==> Module replacement summary: $REPLACED replaced, $NOT_FOUND not found in ramdisk"
-
-          # List stock modules that were NOT replaced (potential mismatch risk)
-          echo "==> Stock modules NOT replaced (kept original):"
-          for stock_ko in $(find . -name "*.ko" -type f); do
-              stock_name=$(basename $stock_ko)
-              built=$(find $GITHUB_WORKSPACE/out -name "$stock_name" -type f | head -n 1)
-              if [ -z "$built" ]; then
-                  echo "  [INFO] $stock_name — stock module kept (MODVERSIONS enabled, CRC should match)"
-              fi
-          done
-
-          find . | cpio -H newc -o > ../ramdisk.cpio
-          cd ..
-
-          echo "==> Repacking vendor_boot_custom.img..."
-          ./magiskboot repack vendor_boot.img vendor_boot_custom.img
-          cp vendor_boot_custom.img $GITHUB_WORKSPACE/FinalOutput/
-
-      - name: Upload Final Artifacts
+      - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OnePlus-9Pro-Complete-Package
+          name: OP9Pro-Stock-Kernel
           path: FinalOutput/*
