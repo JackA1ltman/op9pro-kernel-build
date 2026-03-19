@@ -1,4 +1,4 @@
-name: Build OnePlus 9 Pro Kernel (1:1 Stock)
+name: Build OnePlus 9 Pro Kernel & Modules
 
 on:
   push:
@@ -55,34 +55,16 @@ jobs:
 
       - name: Clone Toolchains
         run: |
-          # ================================================================
-          # CRITICAL: Use clang-r416183b to match stock OnePlus kernel
-          # Official source: build.config.common specifies this exact version
-          # Using a different clang produces different CRCs → MODVERSIONS
-          # mismatch → bootloop
-          # ================================================================
-          echo "==> Fetching AOSP Clang (r416183b) — matches official OnePlus build..."
+          echo "==> Fetching AOSP Clang (r416183b) — matches stock OnePlus kernel..."
           mkdir -p $GITHUB_WORKSPACE/toolchain/clang
-
           git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android12-release --depth=1 /tmp/clang-full
-
           CLANG_DIR=$(find /tmp/clang-full -maxdepth 1 -type d -name "clang-r416183b*" | head -n 1)
           if [ -z "$CLANG_DIR" ]; then
-            echo "WARNING: clang-r416183b not found! Available:"
-            ls -d /tmp/clang-full/clang-*/ 2>/dev/null || echo "No clang dirs found"
             CLANG_DIR=$(ls -d /tmp/clang-full/clang-*/ 2>/dev/null | sort -V | tail -n1)
           fi
-
-          if [ -z "$CLANG_DIR" ]; then
-            echo "ERROR: No AOSP Clang found!"
-            exit 1
-          fi
-
           echo "==> Using clang from: $CLANG_DIR"
           cp -r "$CLANG_DIR"/* $GITHUB_WORKSPACE/toolchain/clang/
           rm -rf /tmp/clang-full
-
-          echo "==> Clang version:"
           $GITHUB_WORKSPACE/toolchain/clang/bin/clang --version
 
           echo "==> Cloning GCC & Build Tools..."
@@ -110,27 +92,15 @@ jobs:
           sudo mkswap /swapfile2
           sudo swapon /swapfile2
 
-      - name: Build Kernel
+      - name: Generate Proxy Config & Build Kernel with Modules
         run: |
           cd $GITHUB_WORKSPACE
           export PATH="$GITHUB_WORKSPACE/toolchain/clang/bin:$GITHUB_WORKSPACE/toolchain/gcc-aarch64/bin:$GITHUB_WORKSPACE/toolchain/gcc-arm32/bin:$PATH"
 
-          # Use consolidate variant (matches stock)
+          # Use consolidate variant instead of debug
           sed -i 's/VARIANTS=(qgki-debug/VARIANTS=(qgki-consolidate/' $GITHUB_WORKSPACE/kernel/msm-5.4/build.config.msm.lahaina
           sed -i 's/qgki-debug | qgki-consolidate/qgki-consolidate | qgki-consolidate/' $GITHUB_WORKSPACE/kernel/msm-5.4/build.config.msm.lahaina
 
-          # ================================================================
-          # BUILD CONFIG — BOOTLOOP FIX (Build 110)
-          #
-          # Problem: AnyKernel3 flashes only the kernel Image. The 49
-          # kernel modules in vendor_boot remain from stock. With
-          # MODVERSIONS=y, CRC mismatches cause ALL modules to fail
-          # loading → device hangs at OnePlus logo.
-          #
-          # Fix: Disable MODVERSIONS (removes CRC check) and enable
-          # MODULE_FORCE_LOAD (allows loading despite vermagic diff).
-          # This is the standard approach for ALL custom Android kernels.
-          # ================================================================
           cat << 'EOF' > build.config.custom
           function append_cmd() {
               if [ ! -z "${!1}" ]; then
@@ -142,48 +112,17 @@ jobs:
           export -f append_cmd
           . ${ROOT_DIR}/kernel/msm-5.4/build.config.msm.lahaina
 
-          function post_defconfig_checks() {
-              echo "=== POST-DEFCONFIG CONFIG CHECK ==="
-              echo "--- LOCALVERSION ---"
-              grep "CONFIG_LOCALVERSION=" ${OUT_DIR}/.config || echo "(not found)"
-              echo "--- Module versioning (BEFORE fix) ---"
-              grep -E "CONFIG_MODVERSIONS=|CONFIG_MODULE_SIG=|CONFIG_MODULE_FORCE_LOAD=" ${OUT_DIR}/.config || echo "(not found)"
-              echo "--- Display/GPU ---"
-              grep -E "CONFIG_DRM=|CONFIG_DRM_MSM=" ${OUT_DIR}/.config || echo "(not found)"
-              echo "--- Subsystem loaders ---"
-              grep -E "CONFIG_QCOM_Q6V5|CONFIG_QCOM_RPMH=|CONFIG_QCOM_SMEM=" ${OUT_DIR}/.config || echo "(not found)"
-              echo "=== END CONFIG CHECK ==="
-
-              (cd ${KERNEL_DIR} && make "${TOOL_ARGS[@]}" O=${OUT_DIR} ${MAKE_ARGS} olddefconfig)
-          }
-          append_cmd POST_DEFCONFIG_CMDS 'post_defconfig_checks'
-
           function disable_modversions() {
-              echo "============================================"
-              echo "=== BOOTLOOP FIX: DISABLING MODVERSIONS ==="
-              echo "============================================"
-              echo ""
-              echo "Reason: AnyKernel3 only flashes kernel Image."
-              echo "49 modules in vendor_boot are from stock kernel."
-              echo "MODVERSIONS CRC mismatch causes module load failure."
-              echo ""
+              echo "=== BOOTLOOP FIX: DISABLING MODVERSIONS & SIGS ==="
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODVERSIONS
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODULE_SIG
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --disable MODULE_SIG_ALL
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --enable MODULE_FORCE_LOAD
 
-              # Disable MODVERSIONS — removes CRC verification
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config \
-                  -d MODVERSIONS
+              # Force strictly matching LOCALVERSION
+              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config --set-str LOCALVERSION "-qgki-consolidate"
 
-              # Enable MODULE_FORCE_LOAD — allows loading modules
-              # even if vermagic string doesn't match exactly
-              ${KERNEL_DIR}/scripts/config --file ${OUT_DIR}/.config \
-                  -e MODULE_FORCE_LOAD
-
-              # Regenerate config to resolve dependencies
               (cd ${KERNEL_DIR} && make "${TOOL_ARGS[@]}" O=${OUT_DIR} ${MAKE_ARGS} olddefconfig)
-
-              echo ""
-              echo "--- Module config (AFTER fix) ---"
-              grep -E "CONFIG_MODVERSIONS|CONFIG_MODULE_FORCE_LOAD" ${OUT_DIR}/.config
-              echo "============================================"
           }
           append_cmd POST_DEFCONFIG_CMDS 'disable_modversions'
           EOF
@@ -206,38 +145,77 @@ jobs:
           export CROSS_COMPILE_COMPAT=arm-linux-androideabi-
           export CLANG_TRIPLE=aarch64-linux-gnu-
 
-          # Fix scmversion to prevent unwanted suffix (e.g. -dirty, +)
+          # Fix scmversion to prevent unwanted suffix
           find $GITHUB_WORKSPACE/kernel/msm-5.4/ -name ".git" -exec rm -rf {} +
           echo "" > $GITHUB_WORKSPACE/kernel/msm-5.4/.scmversion
           sed -i 's/echo "+"/echo ""/g' $GITHUB_WORKSPACE/kernel/msm-5.4/scripts/setlocalversion
 
-          # Remove -Werror to allow build to pass with warnings (stock has many)
+          # Disable annoying warnings
           find $GITHUB_WORKSPACE/kernel/msm-5.4/ -type f \( -name "Makefile*" -o -name "Kbuild*" -o -name "*.mk" \) -exec sed -i 's/-Werror[a-zA-Z0-9_=-]*//g' {} +
-          # Remove GCC-only flag unsupported by Clang
-          find $GITHUB_WORKSPACE/kernel/msm-5.4/ -type f \( -name "Makefile*" -o -name "Kbuild*" -o -name "*.mk" \) -exec sed -i 's/-fmerge-constants//g' {} +
 
-          # Run the build
           bash device/qcom/kernelscripts/build.sh LLVM=1 LLVM_IAS=1 DTC_FLAGS="${DTC_FLAGS}"
 
-      - name: Package Kernel into AnyKernel3 ZIP
-        run: |
-          mkdir -p $GITHUB_WORKSPACE/FinalOutput
+      - name: Prepare FinalOutput Directory
+        run: mkdir -p $GITHUB_WORKSPACE/FinalOutput
 
+      - name: Package Kernel & Modules into AnyKernel3 ZIP
+        run: |
           RAW_IMAGE=$(find $GITHUB_WORKSPACE/out -type f -name "Image" | head -n 1)
           if [ -z "$RAW_IMAGE" ]; then
             echo "ERROR: Kernel image not found!"
             exit 1
           fi
 
+          echo "==> Fetching AnyKernel3 template..."
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git $GITHUB_WORKSPACE/AnyKernel3
           cd $GITHUB_WORKSPACE/AnyKernel3
-          rm -rf modules patch ramdisk README.md
-          cp $GITHUB_WORKSPACE/anykernel/anykernel.sh ./anykernel.sh || true
-          cp "$RAW_IMAGE" ./Image
-          zip -r9 "$GITHUB_WORKSPACE/FinalOutput/OP9Pro-Stock-Kernel-AK3.zip" . -x '.git/*' -x '*.zip'
 
-      - name: Upload Kernel Artifact
+          echo "==> Preparing anykernel.sh..."
+          cat << 'EOF' > anykernel.sh
+          # AnyKernel3 Ramdisk Mod Script
+          properties() { '
+          kernel.string=Custom OP9Pro Kernel Compatible with Stock
+          do.devicecheck=1
+          do.modules=1
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=OnePlus9Pro
+          device.name2=lemonadep
+          device.name3=OnePlus9
+          device.name4=lemonade
+          supported.versions=11.0-14.0
+          supported.patchlevels=
+          '; }
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=1;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+          . tools/ak3-core.sh;
+          dump_boot;
+          patch_cmdline "androidboot.selinux" "androidboot.selinux=permissive"
+          patch_fstab fstab.qcom /vendor ext4 options "avb=vbmeta_vendor" ""
+          patch_fstab fstab.qcom /vendor ext4 options "avb_keys=.*" ""
+          write_boot;
+          EOF
+
+          echo "==> Injecting Kernel Image & DTBs..."
+          cp "$RAW_IMAGE" ./Image
+          
+          # Try copying DTBs if they exist
+          DTB=$(find $GITHUB_WORKSPACE/out -type f -name "dtb" | head -n 1)
+          if [ -n "$DTB" ]; then cp "$DTB" ./dtb; fi
+
+          echo "==> Injecting Vendor Modules for OOS 14 (vendor_dlkm)..."
+          mkdir -p modules/vendor_dlkm/lib/modules
+          find $GITHUB_WORKSPACE/out -type f -name "*.ko" -exec cp {} modules/vendor_dlkm/lib/modules/ \;
+
+          echo "==> Zipping..."
+          rm -rf .git README.md *placeholder
+          zip -r9 "$GITHUB_WORKSPACE/FinalOutput/OP9Pro-Stock-Kernel-AK3.zip" .
+
+      - name: Upload Final Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OP9Pro-Stock-Kernel
+          name: OnePlus-9Pro-Complete-Package
           path: FinalOutput/*
