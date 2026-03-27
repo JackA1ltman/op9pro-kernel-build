@@ -173,17 +173,15 @@ jobs:
           cat << 'EOF' > anykernel.sh
           # AnyKernel3 Ramdisk Mod Script
           properties() { '
-          kernel.string=Perfect 1:1 OEM Twin Custom Kernel
+          kernel.string=Automatic Kernel Build
           do.devicecheck=1
           do.modules=0
           do.systemless=1
           do.cleanup=1
           do.cleanuponabort=0
-          device.name1=OnePlus9Pro
-          device.name2=lemonadep
-          device.name3=OnePlus9
-          device.name4=lemonade
-          supported.versions=11.0-14.0
+          device.name1=OnePlus9RT
+          device.name2=martini
+          supported.versions=15.0-16.0
           supported.patchlevels=
           '; }
           block=/dev/block/bootdevice/by-name/boot;
@@ -207,7 +205,7 @@ jobs:
 
           echo "==> Zipping..."
           rm -rf .git README.md *placeholder
-          zip -r9 "$GITHUB_WORKSPACE/FinalOutput/OP9Pro-Stock-Kernel-AK3.zip" .
+          zip -r9 "$GITHUB_WORKSPACE/FinalOutput/OP9RT-ColorOS-Kernel-AK3.zip" .
 
       - name: Upload Final Artifacts
         uses: actions/upload-artifact@v4
