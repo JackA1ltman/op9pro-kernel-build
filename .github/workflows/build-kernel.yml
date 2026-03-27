@@ -210,5 +210,5 @@ jobs:
       - name: Upload Final Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OnePlus-9Pro-Complete-Package
+          name: OnePlus-9RT-Complete-Package
           path: FinalOutput/*
