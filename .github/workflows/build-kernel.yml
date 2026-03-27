@@ -30,7 +30,7 @@ jobs:
           git clone --depth=1 -b oneplus/sm8350_u_14.0.0_oneplus9 https://github.com/OnePlusOSS/android_kernel_oneplus_sm8350.git kernel
           
           # Clone AOSP Clang 11.0.2 (r383902b1)
-          git clone --depth=1 -b clang-r383902b1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-toolchain
+          git clone --depth=1 -b r399163b https://github.com/Nicklas373/aosp-clang.git clang-toolchain
 
           # Dependency Resolution: Clone LineageOS GCC wrappers (fixes empty AOSP GCC repo bug)
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 gcc-arm64
