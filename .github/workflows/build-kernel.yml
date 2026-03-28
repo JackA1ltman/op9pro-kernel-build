@@ -92,17 +92,6 @@ jobs:
           sudo mkswap /swapfile2
           sudo swapon /swapfile2
 
-      - name: Get KernelSU
-        run: |
-          cd $GITHUB_WORKSPACE/kernel/msm-5.4
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/refs/heads/main/kernel/setup.sh" | bash -s main
-
-          sudo echo "CONFIG_KSU=y" >> ${ROOT_DIR}/stock_config.txt
-          sudo echo "CONFIG_KSU_MANUAL_HOOK=y" >> ${ROOT_DIR}/stock_config.txt
-
-          curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/refs/heads/mainline/Patches/syscall_hook_patches.sh" | bash -s
-          curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/refs/heads/mainline/Patches/backport_patches.sh" | bash -s
-
       - name: Generate Proxy Config & Build Kernel with Modules
         run: |
           cd $GITHUB_WORKSPACE
@@ -125,6 +114,16 @@ jobs:
 
           # OVERWRITE THE DEFAULT DEFCONFIG WITH OUR EXACT DEVICE CONFIG (100% ABI TWIN)
           cp ${ROOT_DIR}/stock_config.txt ${ROOT_DIR}/${KERNEL_DIR}/arch/arm64/configs/${DEFCONFIG}
+
+          # KernelSU
+          cd $GITHUB_WORKSPACE/kernel/msm-5.4
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/refs/heads/main/kernel/setup.sh" | bash -s main
+
+          sudo echo "CONFIG_KSU=y" >> ${ROOT_DIR}/${KERNEL_DIR}/arch/arm64/configs/${DEFCONFIG}
+          sudo echo "CONFIG_KSU_MANUAL_HOOK=y" >> ${ROOT_DIR}/${KERNEL_DIR}/arch/arm64/configs/${DEFCONFIG}
+
+          curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/refs/heads/mainline/Patches/syscall_hook_patches.sh" | bash -s
+          curl -LSs "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/refs/heads/mainline/Patches/backport_patches.sh" | bash -s
 
           function post_config_mod() {
               echo "=== FORCING LOCALVERSION AND PRESERVING STOCK CONFIG ==="
